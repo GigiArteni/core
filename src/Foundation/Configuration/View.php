@@ -13,24 +13,29 @@ final class View
     public function __construct()
     {
         $this->buildNamespaceUsing(function (string $path): string {
-            $realPath = realpath($path) ?: $path;
-            // Normalize path separators for cross-platform compatibility
-            $realPath = str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $realPath);
-            $shared = str_replace(['\\', '/'], DIRECTORY_SEPARATOR, shared_path());
-            $containerBase = str_replace(['\\', '/'], DIRECTORY_SEPARATOR, app_path('Containers') . DIRECTORY_SEPARATOR);
+            // Normalize all paths to use forward slashes and remove drive letters
+            $normalize = function ($p) {
+                $p = str_replace(['\\', '/'], '/', $p);
+                return preg_replace('/^[A-Za-z]:/', '', $p); // Remove drive letter
+            };
+            $path = $normalize($path);
+            $shared = $normalize(shared_path());
+            $containers = $normalize(app_path('Containers'));
 
-            if (Str::contains($realPath, $shared)) {
-                // Return the namespace as 'app/Ship' for shared_path
-                return 'app/Ship';
+            if (Str::contains($path, $shared)) {
+                // Return only the last directory (e.g., 'ship')
+                return Str::of($shared)
+                    ->afterLast('/')
+                    ->camel()
+                    ->value();
             }
 
-            // Remove the container base path and split the rest
-            $relative = Str::of($realPath)->after($containerBase);
-            $parts = collect(explode(DIRECTORY_SEPARATOR, $relative))
-                ->filter(fn($part) => $part !== '' && $part !== '.' && $part !== '..')
+            return Str::of($path)
+                ->after($containers . '/')
+                ->explode('/')
                 ->take(2)
-                ->map(static fn (string $part) => Str::camel($part));
-            return $parts->implode('@');
+                ->map(static fn (string $part) => Str::camel($part))
+                ->implode('@');
         });
     }
 

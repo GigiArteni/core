@@ -27,6 +27,8 @@ describe(class_basename(Apiato::class), function (): void {
     it('can be created with default configuration', function (): void {
         $apiato = Apiato::configure()->create();
 
+        $normalize = static fn(array $paths) => array_map(static fn($p) => str_replace('\\', '/', $p), $paths);
+
         expect($apiato->providers())
             ->toEqualCanonicalizing([
                 GeneratorsServiceProvider::class,
@@ -42,31 +44,37 @@ describe(class_basename(Apiato::class), function (): void {
                 ShipServiceProvider::class,
                 BookServiceProvider::class,
                 EventServiceProvider::class,
-            ])->and($apiato->configs())->toEqualCanonicalizing([
+            ])
+            ->and($normalize($apiato->configs()))->toEqualCanonicalizing($normalize([
                 shared_path('Configs/boat.php'),
                 shared_path('Configs/fractal.php'),
                 shared_path('Configs/repository.php'),
                 app_path('Containers/MySection/Book/Configs/mySection-book.php'),
-            ])->and($apiato->events())->toEqualCanonicalizing([
+            ]))
+            ->and($normalize($apiato->events()))->toEqualCanonicalizing($normalize([
                 shared_path('Listeners'),
                 app_path('Containers/MySection/Book/Listeners'),
                 app_path('Containers/MySection/Author/Listeners'),
-            ])->and($apiato->commands())->toEqualCanonicalizing([
+            ]))
+            ->and($normalize($apiato->commands()))->toEqualCanonicalizing($normalize([
                 shared_path('Commands'),
                 app_path('Containers/MySection/Book/UI/CLI/Commands'),
-            ])->and($apiato->helpers())->toEqualCanonicalizing([
+            ]))
+            ->and($normalize($apiato->helpers()))->toEqualCanonicalizing($normalize([
                 shared_path('Helpers/ExplosiveClass.php'),
                 shared_path('Helpers/functions.php'),
                 shared_path('Helpers/helpers.php'),
                 app_path('Containers/MySection/Book/Helpers/functions.php'),
                 app_path('Containers/MySection/Author/Helpers/helpers.php'),
-            ])->and($apiato->migrations())->toEqualCanonicalizing([
+            ]))
+            ->and($normalize($apiato->migrations()))->toEqualCanonicalizing($normalize([
                 shared_path('Migrations'),
                 app_path('Containers/MySection/Book/Data/Migrations'),
                 app_path('Containers/Identity/User/Data/Migrations'),
                 app_path('Containers/SocialInteraction/Comment/Data/Migrations'),
                 app_path('Containers/SocialInteraction/Like/Data/Migrations'),
-            ])->and($apiato->seeding()->seeders())->toEqualCanonicalizing([
+            ]))
+            ->and($apiato->seeding()->seeders())->toEqualCanonicalizing([
                 Workbench\App\Containers\MySection\Book\Data\Seeders\Ordered_1::class,
                 Workbench\App\Containers\MySection\Book\Data\Seeders\Murdered_2::class,
                 Workbench\App\Containers\MySection\Book\Data\Seeders\Wondered_3::class,
@@ -75,19 +83,22 @@ describe(class_basename(Apiato::class), function (): void {
                 Murdered_2::class,
                 Wondered_3::class,
                 Unordered::class,
-            ])->and($apiato->localization()->paths())->toEqualCanonicalizing([
+            ])->and($normalize($apiato->localization()->paths()))->toEqualCanonicalizing($normalize([
                 shared_path('Languages'),
                 app_path('Containers/MySection/Book/Languages'),
-            ])->and($apiato->view()->paths())->toEqualCanonicalizing([
+            ]))
+            ->and($normalize($apiato->view()->paths()))->toEqualCanonicalizing($normalize([
                 shared_path('Views'),
                 shared_path('Mails/Templates'),
                 app_path('Containers/MySection/Book/UI/WEB/Views'),
                 app_path('Containers/MySection/Author/Mails/Templates'),
-            ])->and($apiato->routing()->webRoutes())->toEqualCanonicalizing([
+            ]))
+            ->and($normalize($apiato->routing()->webRoutes()))->toEqualCanonicalizing($normalize([
                 app_path('Containers/MySection/Book/UI/WEB/Routes/CreateBook.v1.public.php'),
                 app_path('Containers/MySection/Book/UI/WEB/Routes/ListBooks.php'),
                 app_path('Containers/MySection/Author/UI/WEB/Routes/ListAuthors.php'),
-            ])->and($apiato->factory()->resolveFactoryName(Book::class))->toBe(BookFactory::class)
+            ]))
+            ->and($apiato->factory()->resolveFactoryName(Book::class))->toBe(BookFactory::class)
             ->and($apiato->repository()->resolveModelName(BookRepository::class))->toBe(Book::class);
     });
 
