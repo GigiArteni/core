@@ -1,245 +1,127 @@
 <?php
 
-/*
-|--------------------------------------------------------------------------
-| Prettus Repository Config
-|--------------------------------------------------------------------------
-|
-|
-*/
 return [
     /*
     |--------------------------------------------------------------------------
-    | Repository Pagination Limit Default
+    | Repository Generator Settings
     |--------------------------------------------------------------------------
-    |
+    */
+    'generator' => [
+        'basePath' => app_path(),
+        'rootNamespace' => 'App\\',
+        'stubsOverridePath' => app_path(),
+        'paths' => [
+            'models' => 'Models',
+            'repositories' => 'Repositories',
+            'interfaces' => 'Repositories',
+            'criteria' => 'Criteria',
+            'transformers' => 'Transformers',
+            'validators' => 'Validators',
+            'controllers' => 'Http/Controllers',
+            'provider' => 'RepositoryServiceProvider',
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Pagination
+    |--------------------------------------------------------------------------
     */
     'pagination' => [
-        'limit' => 15,
+        'limit' => 15
     ],
 
     /*
     |--------------------------------------------------------------------------
-    | Fractal Presenter Config
+    | Enhanced Cache Settings
     |--------------------------------------------------------------------------
-    |
-
-    Available serializers:
-    ArraySerializer
-    DataArraySerializer
-    JsonApiSerializer
-
-    */
-    'fractal' => [
-        'params' => [
-            'include' => 'include',
-        ],
-        'serializer' => League\Fractal\Serializer\DataArraySerializer::class,
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
-    | Cache Config
-    |--------------------------------------------------------------------------
-    |
     */
     'cache' => [
-        /*
-         |--------------------------------------------------------------------------
-         | Cache Status
-         |--------------------------------------------------------------------------
-         |
-         | Enable or disable cache
-         |
-         */
-        'enabled' => false,
-
-        /*
-         |--------------------------------------------------------------------------
-         | Cache Minutes
-         |--------------------------------------------------------------------------
-         |
-         | Time of expiration cache
-         |
-         */
-        'minutes' => 30,
-
-        /*
-         |--------------------------------------------------------------------------
-         | Cache Repository
-         |--------------------------------------------------------------------------
-         |
-         | Instance of Illuminate\Contracts\Cache\Repository
-         |
-         */
+        'enabled' => env('REPOSITORY_CACHE_ENABLED', true),
+        'minutes' => env('REPOSITORY_CACHE_MINUTES', 30),
         'repository' => 'cache',
-
-        /*
-          |--------------------------------------------------------------------------
-          | Cache Clean Listener
-          |--------------------------------------------------------------------------
-          |
-          |
-          |
-          */
         'clean' => [
-            /*
-              |--------------------------------------------------------------------------
-              | Enable clear cache on repository changes
-              |--------------------------------------------------------------------------
-              |
-              */
-            'enabled' => true,
-
-            /*
-              |--------------------------------------------------------------------------
-              | Actions in Repository
-              |--------------------------------------------------------------------------
-              |
-              | create : Clear Cache on create Entry in repository
-              | update : Clear Cache on update Entry in repository
-              | delete : Clear Cache on delete Entry in repository
-              |
-              */
+            'enabled' => env('REPOSITORY_CACHE_CLEAN_ENABLED', true),
             'on' => [
                 'create' => true,
                 'update' => true,
                 'delete' => true,
-            ],
-        ],
-
-        'params' => [
-            /*
-            |--------------------------------------------------------------------------
-            | Skip Cache Params
-            |--------------------------------------------------------------------------
-            |
-            |
-            | Ex: http://prettus.local/?search=lorem&skipCache=true
-            |
-            */
-            'skipCache' => 'skipCache',
-        ],
-
-        /*
-       |--------------------------------------------------------------------------
-       | Methods Allowed
-       |--------------------------------------------------------------------------
-       |
-       | methods cacheable : all, paginate, find, findByField, findWhere, getByCriteria
-       |
-       | Ex:
-       |
-       | 'only'  =>['all','paginate'],
-       |
-       | or
-       |
-       | 'except'  =>['find'],
-       */
-        'allowed' => [
-            'only' => null,
-            'except' => null,
+            ]
         ],
     ],
 
     /*
     |--------------------------------------------------------------------------
-    | Criteria Config
+    | Database Transaction Settings
     |--------------------------------------------------------------------------
-    |
-    | Settings of request parameters names that will be used by Criteria
-    |
+    | Smart transaction handling for data integrity
     */
-    'criteria' => [
-        /*
-        |--------------------------------------------------------------------------
-        | Accepted Conditions
-        |--------------------------------------------------------------------------
-        |
-        | Conditions accepted in consultations where the Criteria
-        |
-        | Ex:
-        |
-        | 'acceptedConditions'=>['=','like']
-        |
-        | $query->where('foo','=','bar')
-        | $query->where('foo','like','bar')
-        |
-        */
-        'acceptedConditions' => [
-            '=',
-            'like',
-            'in',
-        ],
-        /*
-        |--------------------------------------------------------------------------
-        | Request Params
-        |--------------------------------------------------------------------------
-        |
-        | Request parameters that will be used to filter the query in the repository
-        |
-        | Params :
-        |
-        | - search : Searched value
-        |   Ex: http://prettus.local/?search=lorem
-        |
-        | - searchFields : Fields in which research should be carried out
-        |   Ex:
-        |    http://prettus.local/?search=lorem&searchFields=name;email
-        |    http://prettus.local/?search=lorem&searchFields=name:like;email
-        |    http://prettus.local/?search=lorem&searchFields=name:like
-        |
-        | - filter : Fields that must be returned to the response object
-        |   Ex:
-        |   http://prettus.local/?search=lorem&filter=id,name
-        |
-        | - orderBy : Order By
-        |   Ex:
-        |   http://prettus.local/?search=lorem&orderBy=id
-        |
-        | - sortedBy : Sort
-        |   Ex:
-        |   http://prettus.local/?search=lorem&orderBy=id&sortedBy=asc
-        |   http://prettus.local/?search=lorem&orderBy=id&sortedBy=desc
-        |
-        | - searchJoin: Specifies the search method (AND / OR), by default the
-        |               application searches each parameter with OR
-        |   EX:
-        |   http://prettus.local/?search=lorem&searchJoin=and
-        |   http://prettus.local/?search=lorem&searchJoin=or
-        |
-        */
-        'params' => [
-            'search' => 'search',
-            'searchFields' => 'searchFields',
-            // 'filter'       => 'filter',
-            'orderBy' => 'orderBy',
-            'sortedBy' => 'sortedBy',
-            // 'with'         => 'with',
-            'searchJoin' => 'searchJoin',
-            'withCount' => 'withCount',
-        ],
+    'transactions' => [
+        'auto_wrap_bulk' => env('REPOSITORY_AUTO_TRANSACTION_BULK', true), // Auto-wrap bulk operations
+        'auto_wrap_single' => env('REPOSITORY_AUTO_TRANSACTION_SINGLE', false), // Manual control for single ops
+        'timeout' => env('REPOSITORY_TRANSACTION_TIMEOUT', 30), // Transaction timeout in seconds
+        'retry_deadlocks' => env('REPOSITORY_RETRY_DEADLOCKS', true), // Auto-retry on deadlock
+        'max_retries' => env('REPOSITORY_MAX_RETRIES', 3),
+        'retry_delay' => env('REPOSITORY_RETRY_DELAY', 100), // milliseconds
     ],
+
     /*
     |--------------------------------------------------------------------------
-    | Generator Config
+    | Advanced Bulk Operations
     |--------------------------------------------------------------------------
-    |
+    | Enhanced bulk operations
     */
-    'generator' => [
-        'basePath' => app()->path(),
-        'rootNamespace' => 'App\\',
-        'stubsOverridePath' => app()->path(),
-        'paths' => [
-            'models' => 'Entities',
-            'repositories' => 'Repositories',
-            'interfaces' => 'Repositories',
-            'transformers' => 'Transformers',
-            'presenters' => 'Presenters',
-            'validators' => 'Validators',
-            'controllers' => 'Http/Controllers',
-            'provider' => 'RepositoryServiceProvider',
-            'criteria' => 'Criteria',
-        ],
+    'bulk_operations' => [
+        'enabled' => env('REPOSITORY_BULK_OPERATIONS', true),
+        'chunk_size' => env('REPOSITORY_BULK_CHUNK_SIZE', 1000), // Process in chunks
+        'use_transactions' => env('REPOSITORY_BULK_TRANSACTIONS', true),
+        'log_performance' => false,
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Apiato v.13 Integration
+    |--------------------------------------------------------------------------
+    */
+    'apiato' => [
+        'performance' => [
+            'enhanced_caching' => env('REPOSITORY_ENHANCED_CACHE', true),
+            'query_optimization' => env('REPOSITORY_QUERY_OPTIMIZATION', true),
+            'eager_loading_detection' => env('REPOSITORY_EAGER_LOADING_DETECTION', true),
+        ],
+        'features' => [
+            'enhanced_search' => env('REPOSITORY_ENHANCED_SEARCH', false),
+            'auto_cache_tags' => env('REPOSITORY_AUTO_CACHE_TAGS', true),
+            'smart_relationships' => env('REPOSITORY_SMART_RELATIONSHIPS', true),
+            'event_dispatching' => env('REPOSITORY_EVENT_DISPATCHING', true),
+        ]
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Advanced Settings
+    |--------------------------------------------------------------------------
+    */
+    'advanced' => [
+        'bulk_chunk_size' => env('REPOSITORY_BULK_CHUNK_SIZE', 1000),
+        'use_transactions' => env('REPOSITORY_BULK_TRANSACTIONS', true),
+        'log_performance' => env('REPOSITORY_LOG_PERFORMANCE', false),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | HashId Decoding
+    |--------------------------------------------------------------------------
+    | Enable or disable automatic HashId decoding for all repositories
+    */
+    'hashid_decode' => env('REPOSITORY_HASHID_DECODE', true),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Eager Loading via Query Parameter
+    |--------------------------------------------------------------------------
+    | Enable or disable automatic eager loading of relations via the `include` query parameter.
+    | Supports dot notation (e.g. ?include=user.roles.permissions)
+    */
+    'eager_load_includes' => env('REPOSITORY_EAGER_LOAD_INCLUDES', true),
 ];

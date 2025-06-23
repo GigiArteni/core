@@ -1,6 +1,6 @@
 <?php
 
-use Apiato\Core\Repositories\Repository;
+use Workbench\App\Ship\Parents\Repositories\Repository;
 use Illuminate\Support\Collection;
 use Pest\Expectation;
 use Workbench\App\Containers\Identity\User\Data\Repositories\UserRepository;
@@ -23,6 +23,10 @@ describe(class_basename(Repository::class), function (): void {
             )->has(Book::factory(3))
             ->createOne();
         $repository = new class extends UserRepository {
+            public function __construct()
+            {
+                parent::__construct(app());
+            }
             public function shouldEagerLoadIncludes(): bool
             {
                 return true;
@@ -85,20 +89,10 @@ describe(class_basename(Repository::class), function (): void {
     ]);
 
     it('can disable eager loading', function (bool $enabled): void {
+        config(['repository.eager_load_includes' => $enabled]);
         request()->merge(['include' => 'books']);
         User::factory()->has(Book::factory())->createOne();
-        $repository = new class($enabled) extends UserRepository {
-            public function __construct(
-                private readonly bool $enabled,
-            ) {
-                parent::__construct();
-            }
-
-            public function shouldEagerLoadIncludes(): bool
-            {
-                return $this->enabled;
-            }
-        };
+        $repository = new UserRepository();
 
         $result = $repository->all();
 

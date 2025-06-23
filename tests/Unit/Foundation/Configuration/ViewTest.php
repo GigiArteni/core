@@ -9,7 +9,7 @@ describe(class_basename(View::class), function (): void {
 
         expect(
             $configuration->buildNamespaceFor(shared_path('Views')),
-        )->toBe(Str::of(shared_path())->afterLast(DIRECTORY_SEPARATOR)->camel()->value())
+        )->toBe('app/Ship')
             ->and(
                 $configuration->buildNamespaceFor(
                     app_path('Containers/MySection/Book/Views'),

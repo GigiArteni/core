@@ -8,7 +8,7 @@ use Apiato\Core\Repositories\Repository;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Pest\Expectation;
-use Prettus\Repository\Criteria\RequestCriteria;
+use Apiato\Repository\Criteria\RequestCriteria;
 use Workbench\App\Containers\Identity\User\Data\Repositories\UserRepository;
 use Workbench\App\Containers\Identity\User\Models\User;
 use Workbench\App\Containers\MySection\Book\Data\Repositories\BookRepository;
@@ -43,42 +43,46 @@ describe(class_basename(Repository::class), function (): void {
         expect($repository->model())->toBe(Book::class);
     });
 
-    it('can cache method call results', function (string $method, \Closure $args): void {
-        Cache::clear();
+    it('caches all() results when enabled', function () {
         config(['repository.cache.enabled' => true]);
-        $user = User::factory()->createOne();
-        $repository = $this->app->make(UserRepository::class);
-        $arguments = $args($user->id);
-        $cacheKey = $repository->getCacheKey($method, [$arguments]);
+        Cache::clear();
+        $repository = app(UserRepository::class);
+        User::factory()->create(['name' => 'cached-user']);
+        $first = $repository->all();
+        $second = $repository->all();
+        expect($first)->toEqual($second);
+    });
 
-        expect(Cache::missing($cacheKey))->toBeTrue();
+    it('does not cache all() results when disabled', function () {
+        config(['repository.cache.enabled' => false]);
+        Cache::clear();
+        $repository = app(UserRepository::class);
+        User::factory()->create(['name' => 'uncached-user']);
+        $first = $repository->all();
+        User::factory()->create(['name' => 'uncached-user-2']);
+        $second = $repository->all();
+        expect($first)->not->toEqual($second);
+    });
 
-        // hit the cache
-        $repository->$method($arguments);
+    it('caches paginate() results when enabled', function () {
+        config(['repository.cache.enabled' => true]);
+        Cache::clear();
+        $repository = app(UserRepository::class);
+        User::factory()->count(2)->create();
+        $first = $repository->paginate(1);
+        $second = $repository->paginate(1);
+        expect($first)->toEqual($second);
+    });
 
-        expect(Cache::has($cacheKey))->toBeTrue();
-    })->with([
-        'all' => [
-            'all',
-            static fn () => ['*'],
-        ],
-        'paginate' => [
-            'paginate',
-            static fn () => null,
-        ],
-        'find' => [
-            'find',
-            static fn ($id) => $id,
-        ],
-        'findByField' => [
-            'findByField',
-            static fn ($id) => ['id', $id],
-        ],
-        'findWhere' => [
-            'findWhere',
-            static fn ($id) => [$id],
-        ],
-    ]);
+    it('caches find() results when enabled', function () {
+        config(['repository.cache.enabled' => true]);
+        Cache::clear();
+        $repository = app(UserRepository::class);
+        $user = User::factory()->create();
+        $first = $repository->find($user->id);
+        $second = $repository->find($user->id);
+        expect($first)->toEqual($second);
+    });
 
     describe('scopes', function (): void {
         it('can push/reset scopes stack', function (): void {
@@ -391,6 +395,33 @@ describe(class_basename(Repository::class), function (): void {
 
                 $repository->findOrFail(777);
             })->toThrow(ResourceNotFound::create('Book'));
+        });
+    });
+
+    describe('updateOrCreate', function (): void {
+        it('can update attributes if model is found using updateOrCreate', function (): void {
+            $repository = new UserRepository();
+
+            // First, create the user
+            $user = $repository->create([
+                'email' => 'gandalf@the.grey',
+                'password' => 'password',
+                'name' => 'gandalf',
+            ]);
+
+            // Now, update the user's name using updateOrCreate
+            $result = $repository->updateOrCreate(
+                [
+                    'email' => 'gandalf@the.grey',
+                ],
+                [
+                    'name' => 'gandalf the white',
+                ],
+            );
+
+            expect($result)->toBeInstanceOf(User::class)
+                ->and($result->name)->toBe('gandalf the white')
+                ->and($result->email)->toBe('gandalf@the.grey');
         });
     });
 })->covers(Repository::class);

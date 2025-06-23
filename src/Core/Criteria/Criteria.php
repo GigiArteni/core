@@ -2,8 +2,8 @@
 
 namespace Apiato\Core\Criteria;
 
-use Prettus\Repository\Contracts\CriteriaInterface as PrettusCriteria;
+use Apiato\Repository\Contracts\CriteriaInterface as ApiatoCriteria;
 
-abstract class Criteria implements PrettusCriteria
+abstract class Criteria implements ApiatoCriteria
 {
 }

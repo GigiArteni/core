@@ -7,7 +7,7 @@ use Workbench\App\Containers\Identity\User\Models\User;
 
 class UserRepository extends ParentRepository
 {
-    protected $fieldSearchable = [
+    protected array $fieldSearchable = [
         'name' => 'ilike',
     ];
 

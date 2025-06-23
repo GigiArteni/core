@@ -5,5 +5,5 @@ providers:
   - Apiato\Foundation\Providers\ApiatoServiceProvider
   - Illuminate\Foundation\Support\Providers\EventServiceProvider
   - Vinkla\Hashids\HashidsServiceProvider
-  - Prettus\Repository\Providers\RepositoryServiceProvider
+  - Apiato\Repository\Providers\RepositoryServiceProvider
   - Spatie\Fractal\FractalServiceProvider

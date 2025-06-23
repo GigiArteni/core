@@ -1,0 +1,29 @@
+CONFIG PATHS:
+Array
+(
+    [0] => C:\Work\Projects\Personal\core\workbench\app/Ship\Configs
+    [1] => C:\Work\Projects\Personal\core\workbench\app/Containers/MySection/Book/Configs
+)
+
+SHARED CONFIGS:
+Array
+(
+    [0] => C:\Work\Projects\Personal\core\workbench\app\Ship\Configs\boat.php
+    [1] => C:\Work\Projects\Personal\core\workbench\app\Ship\Configs\fractal.php
+    [2] => C:\Work\Projects\Personal\core\workbench\app\Ship\Configs\repository.php
+)
+
+CONTAINER CONFIGS:
+Array
+(
+    [0] => C:\Work\Projects\Personal\core\workbench\app\Containers\MySection\Book\Configs\mySection-book.php
+)
+
+ALL:
+Array
+(
+    [0] => C:\Work\Projects\Personal\core\workbench\app\Ship\Configs\boat.php
+    [1] => C:\Work\Projects\Personal\core\workbench\app\Ship\Configs\fractal.php
+    [2] => C:\Work\Projects\Personal\core\workbench\app\Ship\Configs\repository.php
+    [3] => C:\Work\Projects\Personal\core\workbench\app\Containers\MySection\Book\Configs\mySection-book.php
+)

@@ -12,7 +12,7 @@ use Workbench\App\Ship\Parents\Repositories\Repository as ParentRepository;
  */
 class BookRepository extends ParentRepository
 {
-    protected $fieldSearchable = [
+    protected array $fieldSearchable = [
         // 'id' => '=',
     ];
 }

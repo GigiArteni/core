@@ -13,19 +13,24 @@ final class Localization
     public function __construct()
     {
         $this->buildNamespaceUsing(function (string $path): string {
-            if (Str::contains($path, shared_path())) {
-                return Str::of(shared_path())
-                    ->afterLast(DIRECTORY_SEPARATOR)
-                    ->camel()
-                    ->value();
+            $realPath = realpath($path) ?: $path;
+            // Normalize path separators for cross-platform compatibility
+            $realPath = str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $realPath);
+            $shared = str_replace(['\\', '/'], DIRECTORY_SEPARATOR, shared_path());
+            $containerBase = str_replace(['\\', '/'], DIRECTORY_SEPARATOR, app_path('Containers') . DIRECTORY_SEPARATOR);
+
+            if (Str::contains($realPath, $shared)) {
+                // Return the namespace as 'app/Ship' for shared_path
+                return 'app/Ship';
             }
 
-            return Str::of($path)
-                ->after(app_path('Containers') . DIRECTORY_SEPARATOR)
-                ->explode(DIRECTORY_SEPARATOR)
+            // Remove the container base path and split the rest
+            $relative = Str::of($realPath)->after($containerBase);
+            $parts = collect(explode(DIRECTORY_SEPARATOR, $relative))
+                ->filter(fn($part) => $part !== '' && $part !== '.' && $part !== '..')
                 ->take(2)
-                ->map(static fn (string $part) => Str::camel($part))
-                ->implode('@');
+                ->map(static fn (string $part) => Str::camel($part));
+            return $parts->implode('@');
         });
     }
 

@@ -4,29 +4,15 @@ namespace Apiato\Core\Repositories;
 
 use Apiato\Core\Repositories\Exceptions\ResourceCreationFailed;
 use Apiato\Core\Repositories\Exceptions\ResourceNotFound;
-use Apiato\Http\RequestRelation;
-use Illuminate\Contracts\Container\BindingResolutionException;
-use Illuminate\Contracts\Database\Query\Expression;
-use Illuminate\Contracts\Support\Arrayable;
-use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\ModelNotFoundException;
-use Prettus\Repository\Contracts\CacheableInterface;
-use Prettus\Repository\Contracts\CriteriaInterface;
-use Prettus\Repository\Criteria\RequestCriteria;
-use Prettus\Repository\Eloquent\BaseRepository;
-use Prettus\Repository\Exceptions\RepositoryException;
-use Prettus\Repository\Traits\CacheableRepository;
-use Prettus\Validator\Exceptions\ValidatorException;
+use Apiato\Repository\Contracts\CriteriaInterface;
+use Apiato\Repository\Eloquent\BaseRepository;
 
 /**
  * @template TModel of Model
  */
-abstract class Repository extends BaseRepository implements CacheableInterface
+abstract class Repository extends BaseRepository
 {
-    use CacheableRepository;
-
     /**
      * Define the maximum number of entries per page that is returned.
      * Set to 0 to "disable" this feature.
@@ -43,108 +29,9 @@ abstract class Repository extends BaseRepository implements CacheableInterface
         parent::__construct(app());
     }
 
-    public function boot(): void
-    {
-        parent::boot();
-
-        if ($this->shouldEagerLoadIncludes()) {
-            $this->eagerLoadRequestedIncludes(app(RequestRelation::class));
-        }
-    }
-
-    /**
-     * Enable or disable eager loading of relations requested by the client via "include" query parameter.
-     */
-    public function shouldEagerLoadIncludes(): bool
-    {
-        return true;
-    }
-
-    /**
-     * Eager load relations if requested by the client via "include" query parameter.
-     * This is a workaround for incompatible third-party packages. (Fractal, L5Repo).
-     *
-     * TODO: What if the include has parameters? e.g. include=books:limit(5|3). Does this still work?
-     *
-     * @see https://apiato.atlassian.net/browse/API-905
-     */
-    public function eagerLoadRequestedIncludes(RequestRelation $requestRelation): void
-    {
-        $this->scope(function (Builder|Model $model) use ($requestRelation): Builder|Model {
-            if ($requestRelation->requestingIncludes()) {
-                if ($model instanceof Model) {
-                    return $model->with($requestRelation->getValidRelationsFor($model));
-                }
-
-                return $model->with($requestRelation->getValidRelationsFor($model->getModel()));
-            }
-
-            return $model;
-        });
-    }
-
-    /**
-     * Add a new global scope to the model.
-     */
-    public function scope(\Closure $scope): static
-    {
-        $this->scopes[] = $scope;
-
-        return $this;
-    }
-
-    /**
-     * Returns the current Model instance.
-     * *
-     * @return TModel
-     */
-    public function getModel()
-    {
-        return parent::getModel();
-    }
-
-    /**
-     * Retrieve all data of repository, paginated.
-     *
-     * @param int|null $limit The number of entries per page. If set to 0, the pagination is disabled.
-     * @param array $columns
-     * @param string $method
-     *
-     * @throws RepositoryException
-     */
-    public function paginate($limit = null, $columns = ['*'], $method = 'paginate'): mixed
-    {
-        $limit = $this->setPaginationLimit($limit);
-
-        if ($this->wantsToSkipPagination($limit) && $this->canSkipPagination()) {
-            return $this->all($columns);
-        }
-
-        if ($this->exceedsMaxPaginationLimit($limit)) {
-            $limit = $this->maxPaginationLimit;
-        }
-
-        if (!$this->allowedCache('paginate') || $this->isSkippedCache()) {
-            return parent::paginate($limit, $columns, $method);
-        }
-
-        $key = $this->getCacheKey('paginate', func_get_args());
-
-        $time = $this->getCacheTime();
-        $value = $this->getCacheRepository()->remember($key, $time, function () use ($limit, $columns, $method) {
-            return parent::paginate($limit, $columns, $method);
-        });
-
-        $this->resetModel();
-        $this->resetScope();
-
-        return $value;
-    }
-
+    // --- Pagination limit logic ---
     public function setPaginationLimit($limit): mixed
     {
-        // the priority is for the function parameter, if not available then take
-        // it from the request if available and if not keep it null.
         return $limit ?? request()?->input('limit');
     }
 
@@ -155,55 +42,10 @@ abstract class Repository extends BaseRepository implements CacheableInterface
 
     public function canSkipPagination(): mixed
     {
-        // check local (per repository) rule
         if (!is_null($this->allowDisablePagination)) {
             return $this->allowDisablePagination;
         }
-
-        // check global (.env) rule
         return config('repository.pagination.skip');
-    }
-
-    /**
-     * Retrieve all data of repository.
-     *
-     * @param array $columns
-     *
-     * @return Collection<array-key, TModel>
-     *
-     * @throws RepositoryException
-     */
-    public function all($columns = ['*'])
-    {
-        if (!$this->allowedCache('all') || $this->isSkippedCache()) {
-            return parent::all($columns);
-        }
-
-        $key = $this->getCacheKey('all', func_get_args());
-        $time = $this->getCacheTime();
-        $value = $this->getCacheRepository()->remember($key, $time, function () use ($columns) {
-            return parent::all($columns);
-        });
-
-        $this->resetModel();
-        $this->resetScope();
-
-        return $value;
-    }
-
-    public function resetScope(): static
-    {
-        parent::resetScope();
-        $this->resetScopes();
-
-        return $this;
-    }
-
-    public function resetScopes(): static
-    {
-        $this->scopes = [];
-
-        return $this;
     }
 
     public function exceedsMaxPaginationLimit(mixed $limit): bool
@@ -211,171 +53,61 @@ abstract class Repository extends BaseRepository implements CacheableInterface
         return $this->maxPaginationLimit > 0 && $limit > $this->maxPaginationLimit;
     }
 
-    /**
-     * @throws RepositoryException
-     */
-    public function addRequestCriteria(array $fieldsToDecode = ['id']): static
+    // --- Scope stack logic ---
+    public function scope(\Closure $scope): static
     {
-        $this->pushCriteria(app(RequestCriteria::class));
-        if ($this->shouldDecodeSearch()) {
-            $this->decodeSearchQueryString($fieldsToDecode);
-        }
-
+        $this->scopes[] = $scope;
         return $this;
     }
 
-    private function shouldDecodeSearch(): bool
+    public function getScopes(): array
     {
-        return config('apiato.hash-id') && $this->isSearching(request()->query());
+        return $this->scopes;
     }
 
-    private function isSearching(array $query): bool
+    public function resetScope(): static
     {
-        return array_key_exists('search', $query) && $query['search'];
-    }
-
-    public function decodeSearchQueryString(array $fieldsToDecode): void
-    {
-        $query = request()->query();
-        $searchQuery = $query['search'];
-
-        $decodedValue = $this->decodeValue($searchQuery);
-        $decodedData = $this->decodeData($fieldsToDecode, $searchQuery);
-
-        $decodedQuery = $this->arrayToSearchQuery($decodedData);
-
-        if ($decodedValue) {
-            if (empty($decodedQuery)) {
-                $decodedQuery .= $decodedValue;
-            } else {
-                $decodedQuery .= (';' . $decodedValue);
-            }
-        }
-
-        $query['search'] = $decodedQuery;
-
-        request()->query->replace($query);
-    }
-
-    private function decodeValue(string $searchQuery): string|int|null
-    {
-        $searchValue = $this->parserSearchValue($searchQuery);
-
-        if (is_string($searchValue)) {
-            return hashids()->decode($searchValue) ?? $searchValue;
-        }
-
-        return null;
-    }
-
-    private function parserSearchValue($search)
-    {
-        if (strpos((string) $search, ';') || strpos((string) $search, ':')) {
-            $values = explode(';', (string) $search);
-            foreach ($values as $value) {
-                $s = explode(':', $value);
-                if (1 === count($s)) {
-                    return $s[0];
-                }
-            }
-
-            return null;
-        }
-
-        return $search;
-    }
-
-    private function decodeData(array $fieldsToDecode, string $searchQuery): array
-    {
-        $searchArray = $this->parserSearchData($searchQuery);
-
-        foreach ($fieldsToDecode as $field) {
-            if (array_key_exists($field, $searchArray)) {
-                $searchArray[$field] = hashids()->decodeOrFail($searchArray[$field]);
-            }
-        }
-
-        return $searchArray;
-    }
-
-    private function parserSearchData($search): array
-    {
-        $searchData = [];
-
-        if (strpos((string) $search, ':')) {
-            $fields = explode(';', (string) $search);
-
-            foreach ($fields as $row) {
-                try {
-                    [$field, $value] = explode(':', $row);
-                    $searchData[$field] = $value;
-                } catch (\Exception) {
-                    // Surround offset error
-                }
-            }
-        }
-
-        return $searchData;
-    }
-
-    private function arrayToSearchQuery(array $decodedSearchArray): string
-    {
-        $decodedSearchQuery = '';
-
-        $fields = array_keys($decodedSearchArray);
-        $length = count($fields);
-        for ($i = 0; $i < $length; ++$i) {
-            $field = $fields[$i];
-            $decodedSearchQuery .= "{$field}:$decodedSearchArray[$field]";
-            if (1 !== $length && $i < $length - 1) {
-                $decodedSearchQuery .= ';';
-            }
-        }
-
-        return $decodedSearchQuery;
-    }
-
-    public function removeRequestCriteria(): static
-    {
-        $this->popCriteria(RequestCriteria::class);
-
+        $this->scopes = [];
         return $this;
     }
 
-    /**
-     * Create a new Model instance.
-     *
-     * @return TModel
-     */
-    public function make(array $attributes)
+    protected function applyScopes($query = null)
     {
-        return $this->getModel()->newInstance($attributes);
-    }
-
-    /**
-     * Persist an entity with the given attributes.
-     *
-     * @return TModel
-     *
-     * @throws ResourceCreationFailed
-     */
-    public function store(Arrayable|array $data)
-    {
-        if (is_array($data)) {
-            return $this->create($data);
+        $query = $query ?: $this->getQuery();
+        foreach ($this->scopes as $scope) {
+            if (!is_callable($scope)) {
+                throw new \RuntimeException('Query scope is not callable');
+            }
+            $query = $scope($query);
         }
-
-        return $this->create($data->toArray());
+        return $query;
     }
 
-    /**
-     * Save a new model and return the instance.
-     *
-     * @return TModel
-     *
-     * @throws ResourceCreationFailed
-     */
-    public function create(array $attributes)
+    // Override getQuery to apply scopes as well as eager loads
+    protected function getQuery(): \Illuminate\Database\Eloquent\Builder
+    {
+        $query = $this->query ?? $this->model->newQuery();
+        $query = $this->applyEagerLoadIncludes($query);
+        $query = $this->applyScopes($query);
+        return $query;
+    }
+
+    // --- Implement required RepositoryInterface methods for compatibility ---
+    public function hidden(array|null $fields = null): static { return $this; }
+    public function visible(array|null $fields = null): static { return $this; }
+    public function scopeQuery(\Closure $scope): static { return $this; }
+    public function getFieldsSearchable(): array { return $this->fieldSearchable ?? []; }
+    public function getModel(): Model { return parent::getModel(); }
+    public function getPresenter() { return null; }
+    public function setPresenter($presenter): static { return $this; }
+    public function skipPresenter(bool $status = true): static { return $this; }
+    public function findByCriteria(\Apiato\Repository\Contracts\CriteriaInterface $criteria): mixed
+    {
+        return parent::getByCriteria($criteria);
+    }
+
+    // --- Exception translation for create/update/delete/findOrFail ---
+    public function create(array $attributes): mixed
     {
         try {
             return parent::create($attributes);
@@ -384,223 +116,93 @@ abstract class Repository extends BaseRepository implements CacheableInterface
         }
     }
 
+    public function update(array $attributes, mixed $id): mixed
+    {
+        try {
+            return parent::update($attributes, $id);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
+            throw ResourceNotFound::create(class_basename($this->model()));
+        }
+    }
+
+    public function delete(mixed $id): bool
+    {
+        try {
+            return (bool) parent::delete($id);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
+            throw ResourceNotFound::create(class_basename($this->model()));
+        }
+    }
+
+    public function findOrFail(int|string $id, array $columns = ['*']): mixed
+    {
+        return $this->find($id, $columns) ?? throw ResourceNotFound::create(class_basename($this->model()));
+    }
+
+    // --- Criteria helpers ---
+    public function pushCriteriaWith(string $criteria, array $args): static
+    {
+        /** @var CriteriaInterface $criteriaInstance */
+        $criteriaInstance = $this->app->makeWith($criteria, $args);
+        return $this->pushCriteria($criteriaInstance);
+    }
+
+    /**
+     * Helper to add RequestCriteria for query string search/filter support.
+     *
+     * @return static
+     */
+    public function addRequestCriteria(): static
+    {
+        // You may need to adjust the class if you use a custom RequestCriteria
+        return $this->pushCriteria(app(\Apiato\Repository\Criteria\RequestCriteria::class));
+    }
+
+    /**
+     * Resolve the model class name using the central Apiato repository resolver, if available.
+     * Falls back to convention-based guessing if not.
+     */
     public function model(): string
     {
         return apiato()->repository()->resolveModelName(static::class);
     }
 
-    /**
-     * Persist an entity instance to the database.
-     *
-     * @param TModel $model
-     *
-     * @return TModel
-     */
-    public function save($model)
-    {
-        $model->save();
 
-        return $model;
+    public function make(array $attributes = []): Model
+    {
+        return $this->model->newInstance($attributes);
     }
 
-    /**
-     * Get the first record matching the attributes. If the record is not found, create it.
-     *
-     * @return TModel
-     */
-    public function firstOrCreate(array $attributes = [], array $values = [])
+    public function store($data): Model
     {
-        /** @var TModel $model */
-        $model = parent::firstOrCreate($attributes);
-        if ($model->wasRecentlyCreated) {
-            $model->update($values);
+        if ($data instanceof Model) {
+            $data->save();
+            return $data;
         }
-
-        return $model;
+        return $this->create($data);
     }
 
-    /**
-     * Update an entity in repository by id.
-     *
-     * @param int|string $id
-     *
-     * @return TModel
-     *
-     * @throws ResourceNotFound
-     * @throws ValidatorException
-     */
-    public function update(array $attributes, $id)
+    public function save($model): bool
     {
-        try {
-            return parent::update($attributes, $id);
-        } catch (ModelNotFoundException) {
-            throw ResourceNotFound::create(class_basename($this->model()));
-        }
+        return $model->save();
     }
 
-    /**
-     * Find an entity by its primary key or throw an exception.
-     *
-     * @return TModel
-     *
-     * @throws ResourceNotFound
-     */
-    public function findOrFail(int|string $id, array $columns = ['*'])
+    // --- Removed custom firstOrCreate: now using BaseRepository implementation which applies criteria, scope, and resets model. ---
+    public function removeRequestCriteria(): static
     {
-        return $this->find($id, $columns) ?? throw ResourceNotFound::create(class_basename($this->model()));
-    }
-
-    /**
-     * Find an entity/s by its primary key.
-     *
-     * @param int|string|array|Arrayable $id
-     * @param array $columns
-     *
-     * @return ($id is array|Arrayable ? Collection<array-key, TModel> : TModel|null)
-     *
-     * @throws RepositoryException
-     */
-    public function find($id, $columns = ['*'])
-    {
-        try {
-            if (!$this->allowedCache('find') || $this->isSkippedCache()) {
-                return parent::find($id, $columns);
-            }
-
-            $key = $this->getCacheKey('find', func_get_args());
-            $time = $this->getCacheTime();
-            $value = $this->getCacheRepository()->remember($key, $time, function () use ($id, $columns) {
-                return parent::find($id, $columns);
-            });
-
-            $this->resetModel();
-            $this->resetScope();
-
-            return $value;
-        } catch (ModelNotFoundException) {
-            return null;
-        }
-    }
-
-    /**
-     * Find an entity by its primary key.
-     *
-     * @return TModel|null
-     */
-    public function findById(int|string $id, array $columns = ['*'])
-    {
-        return $this->find($id, $columns);
-    }
-
-    /**
-     * Find multiple models by their primary keys.
-     *
-     * @return Collection<array-key, TModel>
-     */
-    public function findMany(array|Arrayable $ids, array $columns = ['*'])
-    {
-        return $this->find($ids, $columns) ?? new Collection();
-    }
-
-    /**
-     * Find data by field and value.
-     *
-     * @param (\Closure(static): mixed)|string|array|Expression $field
-     * @param array $columns
-     *
-     * @return Collection<array-key, TModel>
-     */
-    public function findByField($field, $value = null, $columns = ['*'])
-    {
-        if (!$this->allowedCache('findByField') || $this->isSkippedCache()) {
-            return parent::findByField($field, $value, $columns);
-        }
-
-        $key = $this->getCacheKey('findByField', func_get_args());
-        $time = $this->getCacheTime();
-        $value = $this->getCacheRepository()->remember($key, $time, function () use ($field, $value, $columns) {
-            return parent::findByField($field, $value, $columns);
+        // Remove all instances of RequestCriteria from criteria stack
+        $this->criteria = $this->criteria->reject(function ($item) {
+            return $item instanceof \Apiato\Repository\Criteria\RequestCriteria;
         });
-
-        $this->resetModel();
-        $this->resetScope();
-
-        return $value;
-    }
-
-    /**
-     * Find models by multiple fields.
-     *
-     * @param array|string $columns
-     *
-     * @return Collection<array-key, TModel>
-     */
-    public function findWhere(array $where, $columns = ['*'])
-    {
-        if (!$this->allowedCache('findWhere') || $this->isSkippedCache()) {
-            return parent::findWhere($where, $columns);
-        }
-
-        $key = $this->getCacheKey('findWhere', func_get_args());
-        $time = $this->getCacheTime();
-        $value = $this->getCacheRepository()->remember($key, $time, function () use ($where, $columns) {
-            return parent::findWhere($where, $columns);
-        });
-
-        $this->resetModel();
-        $this->resetScope();
-
-        return $value;
-    }
-
-    /**
-     * Delete the model from the database.
-     *
-     * @param int|string $id
-     *
-     * @throws ResourceNotFound
-     */
-    public function delete($id): bool
-    {
-        try {
-            return (bool) parent::delete($id);
-        } catch (ModelNotFoundException) {
-            throw ResourceNotFound::create(class_basename($this->model()));
-        }
-    }
-
-    /**
-     * @param class-string<CriteriaInterface> $criteria Criteria class name
-     * @param array<string, mixed> $args Arguments to pass to the criteria constructor
-     *
-     * @throws RepositoryException
-     * @throws BindingResolutionException
-     */
-    public function pushCriteriaWith(string $criteria, array $args): static
-    {
-        /** @var CriteriaInterface $criteriaInstance */
-        $criteriaInstance = $this->app->makeWith($criteria, $args);
-
-        return $this->pushCriteria($criteriaInstance);
-    }
-
-    protected function applyScope(): static
-    {
-        parent::applyScope();
-        $this->applyScopes();
-
         return $this;
     }
 
-    protected function applyScopes(): static
+    // --- Fix for with() compatibility: accept string or array ---
+    public function with(array|string $relations): static
     {
-        foreach ($this->scopes as $scope) {
-            if (!is_callable($scope)) {
-                throw new \RuntimeException('Query scope is not callable');
-            }
-            $this->model = $scope($this->model);
+        if (is_string($relations)) {
+            $relations = array_map('trim', explode(',', $relations));
         }
-
-        return $this;
+        return parent::with($relations);
     }
 }

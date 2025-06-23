@@ -11,9 +11,9 @@ final class ConfigServiceProvider extends ServiceProvider
     public function register(): void
     {
         foreach (Apiato::instance()->configs() as $path) {
-            $this->mergeConfigFrom($path, Str::of($path)
-                ->afterLast(DIRECTORY_SEPARATOR)
-                ->before('.php')->value());
+            // Use basename() for cross-platform compatibility
+            $key = basename(str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $path), '.php');
+            $this->mergeConfigFrom($path, $key);
         }
 
         $this->mergeConfigFrom(
