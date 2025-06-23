@@ -12,7 +12,7 @@ use App\Ship\Parents\Repositories\Repository as ParentRepository;
  */
 final class {{class-name}} extends ParentRepository
 {
-    protected $fieldSearchable = [
+    protected array $fieldSearchable = [
         // 'id' => '=',
     ];
 }
