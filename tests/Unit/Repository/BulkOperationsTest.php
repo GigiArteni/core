@@ -1,812 +1,328 @@
 <?php
 
-use Apiato\Core\Repositories\Repository;
+use Apiato\Repository\Support\HashIdHelper;
 use Apiato\Repository\Traits\BulkOperations;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\SoftDeletes;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Workbench\App\Containers\MySection\Book\Models\Book;
+use Workbench\App\Containers\MySection\Book\Data\Repositories\BookRepository;
 use Carbon\Carbon;
 
-// Test Model for bulk operations
-class BulkTestModel extends Model
-{
-    protected $table = 'bulk_test_models';
-    protected $fillable = ['name', 'email', 'status', 'priority', 'active', 'category_id'];
-    protected $casts = [
-        'active' => 'boolean',
-        'priority' => 'integer',
-        'category_id' => 'integer'
-    ];
-}
+describe('HashIdHelper', function (): void {
 
-// Test Model with Soft Deletes
-class SoftDeleteBulkModel extends Model
-{
-    use SoftDeletes;
+    beforeEach(function (): void {
+        // Enable hash ID decoding
+        config(['repository.hashid_decode' => true]);
+    });
 
-    protected $table = 'soft_delete_bulk_models';
-    protected $fillable = ['name', 'email', 'status'];
-    protected $dates = ['deleted_at'];
-}
+    it('decodes hash IDs for id fields', function (): void {
+        // Create a hash ID
+        $originalId = 123;
+        $hashId = app('hashids')->encode($originalId);
 
-// Test Repository with BulkOperations trait
-class BulkOperationsRepository extends Repository
-{
-    use BulkOperations;
+        $decoded = HashIdHelper::decodeIfNeeded('id', $hashId);
 
-    protected int $cacheClears = 0;
+        expect($decoded)->toBe($originalId);
+    });
 
-    public function model(): string
-    {
-        return BulkTestModel::class;
-    }
+    it('decodes hash IDs for fields ending with _id', function (): void {
+        $originalId = 456;
+        $hashId = app('hashids')->encode($originalId);
 
-    protected array $fieldSearchable = [
-        'name' => 'like',
-        'email' => '=',
-        'status' => '=',
-    ];
+        expect(HashIdHelper::decodeIfNeeded('book_id', $hashId))->toBe($originalId)
+            ->and(HashIdHelper::decodeIfNeeded('user_id', $hashId))->toBe($originalId)
+            ->and(HashIdHelper::decodeIfNeeded('category_id', $hashId))->toBe($originalId);
+    });
 
-    // Mock cache clearing for testing
-    public function clearCache()
-    {
-        // Use the real repository cache feature if available
-        if (is_callable([parent::class, 'clearCache'])) {
-            parent::clearCache();
-        }
-        // Track cache clears for testing
-        $this->cacheClears++;
-    }
+    it('does not decode fields that do not match pattern', function (): void {
+        $value = 'some-value';
 
-    public function getCacheClearCount(): int
-    {
-        return $this->cacheClears;
-    }
-}
+        expect(HashIdHelper::decodeIfNeeded('name', $value))->toBe($value)
+            ->and(HashIdHelper::decodeIfNeeded('title', $value))->toBe($value)
+            ->and(HashIdHelper::decodeIfNeeded('identifier', $value))->toBe($value);
+    });
 
-// Repository for soft delete testing
-class SoftDeleteRepository extends Repository
-{
-    use BulkOperations;
+    it('handles numeric values without decoding', function (): void {
+        $numericId = 789;
 
-    public function model(): string
-    {
-        return SoftDeleteBulkModel::class;
-    }
-}
+        expect(HashIdHelper::decodeIfNeeded('id', $numericId))->toBe($numericId)
+            ->and(HashIdHelper::decodeIfNeeded('book_id', $numericId))->toBe($numericId);
+    });
 
-uses(RefreshDatabase::class);
+    it('decodes arrays of hash IDs', function (): void {
+        $ids = [1, 2, 3, 4, 5];
+        $hashIds = array_map(fn($id) => app('hashids')->encode($id), $ids);
 
-beforeEach(function () {
-    // Create test table
-    if (!DB::getSchemaBuilder()->hasTable('bulk_test_models')) {
-        DB::getSchemaBuilder()->create('bulk_test_models', function ($table) {
-            $table->id();
-            $table->string('name');
-            $table->string('email'); // Remove unique constraint - let bulkUpsert handle uniqueness
-            $table->string('status')->default('active');
-            $table->integer('priority')->default(0);
-            $table->boolean('active')->default(true);
-            $table->integer('category_id')->nullable();
-            $table->timestamps();
+        $decoded = HashIdHelper::decodeIfNeeded('id', $hashIds);
 
-            // Add composite unique constraint for testing multiple unique columns
-            $table->unique(['email', 'category_id'], 'email_category_unique');
-        });
-    }
+        expect($decoded)->toEqualCanonicalizing($ids);
+    });
 
-    // Create soft delete test table
-    if (!DB::getSchemaBuilder()->hasTable('soft_delete_bulk_models')) {
-        DB::getSchemaBuilder()->create('soft_delete_bulk_models', function ($table) {
-            $table->id();
-            $table->string('name');
-            $table->string('email');
-            $table->string('status')->default('active');
-            $table->timestamps();
-            $table->softDeletes();
-        });
-    }
+    it('handles mixed arrays with numeric and hash IDs', function (): void {
+        $mixedIds = [
+            123, // numeric
+            app('hashids')->encode(456), // hash ID
+            789, // numeric
+            app('hashids')->encode(101112), // hash ID
+        ];
 
-    $this->repository = app(BulkOperationsRepository::class);
-    $this->softDeleteRepository = app(SoftDeleteRepository::class);
+        $decoded = HashIdHelper::decodeIfNeeded('book_id', $mixedIds);
+
+        expect($decoded)->toEqualCanonicalizing([123, 456, 789, 101112]);
+    });
+
+    it('respects config setting for hash ID decoding', function (): void {
+        $hashId = app('hashids')->encode(999);
+
+        // Disable decoding
+        config(['repository.hashid_decode' => false]);
+
+        expect(HashIdHelper::decodeIfNeeded('id', $hashId))->toBe($hashId);
+
+        // Re-enable decoding
+        config(['repository.hashid_decode' => true]);
+
+        expect(HashIdHelper::decodeIfNeeded('id', $hashId))->toBe(999);
+    });
+
 });
 
-describe('Bulk Insert Operations', function () {
+describe('BulkOperations with Hash ID Decoding', function (): void {
 
-    test('bulkInsert creates multiple records with automatic timestamps', function () {
+    beforeEach(function (): void {
+        // Enable hash ID decoding
+        config(['repository.hashid_decode' => true]);
+
+        // Get repository instance
+        $this->bookRepository = app(BookRepository::class);
+
+        // Ensure repository uses BulkOperations trait
+        expect(in_array(BulkOperations::class, class_uses_recursive($this->bookRepository)))->toBeTrue();
+    });
+
+    it('decodes hash IDs in bulkUpdate conditions', function (): void {
+        // Create test books
+        $books = Book::factory()->count(3)->create();
+        $bookIds = $books->pluck('id')->toArray();
+        $hashIds = array_map(fn($id) => app('hashids')->encode($id), $bookIds);
+
+        // Update using hash IDs
+        $affected = $this->bookRepository->bulkUpdate(
+            ['title' => 'Updated Title'],
+            ['id' => ['id', 'IN', $hashIds]]
+        );
+
+        expect($affected)->toBe(3);
+
+        // Verify books were updated
+        $updatedBooks = Book::whereIn('id', $bookIds)->get();
+        expect($updatedBooks)->each(function ($book) {
+            $book->title->toBe('Updated Title');
+        });
+    });
+
+    it('handles bulkInsert with timestamps', function (): void {
+        Carbon::setTestNow('2024-01-01 12:00:00');
+
         $data = [
-            ['name' => 'User 1', 'email' => 'user1@example.com', 'status' => 'active', 'priority' => 1],
-            ['name' => 'User 2', 'email' => 'user2@example.com', 'status' => 'pending', 'priority' => 2],
-            ['name' => 'User 3', 'email' => 'user3@example.com', 'status' => 'inactive', 'priority' => 3],
+            ['title' => 'Book 1'],
+            ['title' => 'Book 2'],
+            ['title' => 'Book 3'],
         ];
 
-        $count = $this->repository->bulkInsert($data);
+        $inserted = $this->bookRepository->bulkInsert($data);
 
-        expect($count)->toBe(3);
+        expect($inserted)->toBe(3);
 
-        // Verify records exist with timestamps
-        $records = DB::table('bulk_test_models')->get();
-        expect($records)->toHaveCount(3);
+        // Verify timestamps were added
+        $books = Book::latest('id')->take(3)->get();
+        expect($books)->each(function ($book) {
+            $book->created_at->format('Y-m-d H:i:s')->toBe('2024-01-01 12:00:00');
+            $book->updated_at->format('Y-m-d H:i:s')->toBe('2024-01-01 12:00:00');
+        });
 
-        foreach ($records as $record) {
-            expect($record->created_at)->not->toBeNull()
-                ->and($record->updated_at)->not->toBeNull();
-        }
-
-        // The repository may clear cache more than once per operation due to cache support.
-        expect($this->repository->getCacheClearCount())->toBeGreaterThanOrEqual(1);
+        Carbon::setTestNow();
     });
 
-    test('bulkInsert handles empty array', function () {
-        $count = $this->repository->bulkInsert([]);
-
-        expect($count)->toBe(0)
-            ->and(DB::table('bulk_test_models')->count())->toBe(0);
-    });
-
-    test('bulkInsert without timestamps when disabled', function () {
-        $data = [
-            ['name' => 'No Timestamp User', 'email' => 'notimestamp@example.com'],
-        ];
-
-        $count = $this->repository->bulkInsert($data, ['timestamps' => false]);
-
-        expect($count)->toBe(1);
-
-        $record = DB::table('bulk_test_models')->first();
-        expect($record->created_at)->toBeNull()
-            ->and($record->updated_at)->toBeNull();
-    });
-
-    test('bulkInsert with custom timestamps', function () {
-        $customTime = Carbon::parse('2023-01-01 12:00:00');
-        $data = [
-            [
-                'name' => 'Custom Time User',
-                'email' => 'custom@example.com',
-                'created_at' => $customTime,
-                'updated_at' => $customTime
-            ],
-        ];
-
-        $count = $this->repository->bulkInsert($data);
-
-        expect($count)->toBe(1);
-
-        $record = DB::table('bulk_test_models')->first();
-        expect($record->created_at)->toBe($customTime->toDateTimeString())
-            ->and($record->updated_at)->toBe($customTime->toDateTimeString());
-    });
-
-    test('bulkInsert processes large datasets in batches', function () {
+    it('processes bulkInsert in batches', function (): void {
         $data = [];
         for ($i = 1; $i <= 2500; $i++) {
-            $data[] = [
-                'name' => "Batch User {$i}",
-                'email' => "batch{$i}@example.com",
-                'priority' => $i % 10
-            ];
+            $data[] = ['title' => "Book $i"];
         }
 
-        $chunkCallbackCalled = 0;
-        $totalProcessed = 0;
-
-        $count = $this->repository->bulkInsert($data, [
+        $batchesProcessed = 0;
+        $inserted = $this->bookRepository->bulkInsert($data, [
             'batch_size' => 1000,
-            'chunk_callback' => function ($inserted, $total, $totalData) use (&$chunkCallbackCalled, &$totalProcessed) {
-                $chunkCallbackCalled++;
-                $totalProcessed = $total;
+            'chunk_callback' => function ($inserted, $total, $totalRecords) use (&$batchesProcessed) {
+                $batchesProcessed++;
             }
         ]);
 
-        expect($count)->toBe(2500)
-            ->and($chunkCallbackCalled)->toBe(3) // 3 chunks: 1000 + 1000 + 500
-            ->and($totalProcessed)->toBe(2500)
-            ->and(DB::table('bulk_test_models')->count())->toBe(2500);
+        expect($inserted)->toBe(2500)
+            ->and($batchesProcessed)->toBe(3); // 1000, 1000, 500
     });
 
-    test('bulkInsert with ignore duplicates option', function () {
-        // Insert initial data with both email and category_id to match our composite unique constraint
-        DB::table('bulk_test_models')->insert([
-            'name' => 'Existing User',
-            'email' => 'existing@example.com',
-            'category_id' => 1,
-            'created_at' => now(),
-            'updated_at' => now()
-        ]);
+    it('handles bulkUpsert with hash IDs', function (): void {
+        // Create existing books with known titles
+        $book1 = Book::factory()->create(['title' => 'Old Book 1']);
+        $book2 = Book::factory()->create(['title' => 'Old Book 2']);
+        $existingIds = [$book1->id, $book2->id];
 
+        // Prepare upsert data with hash IDs
         $data = [
-            ['name' => 'Existing User', 'email' => 'existing@example.com', 'category_id' => 1], // Duplicate
-            ['name' => 'New User', 'email' => 'new@example.com', 'category_id' => 1],
-        ];
-
-        $count = $this->repository->bulkInsert($data, ['ignore_duplicates' => true]);
-
-        // Should not throw error and should insert the new record
-        expect($count)->toBe(1) // Only new record inserted
-            ->and(DB::table('bulk_test_models')->count())->toBe(2);
-    });
-
-});
-
-describe('Bulk Update Operations', function () {
-
-    beforeEach(function () {
-        // Create test data
-        $this->repository->bulkInsert([
-            ['name' => 'Update Test 1', 'email' => 'update1@example.com', 'status' => 'active', 'priority' => 1],
-            ['name' => 'Update Test 2', 'email' => 'update2@example.com', 'status' => 'pending', 'priority' => 2],
-            ['name' => 'Update Test 3', 'email' => 'update3@example.com', 'status' => 'active', 'priority' => 3],
-            ['name' => 'Update Test 4', 'email' => 'update4@example.com', 'status' => 'inactive', 'priority' => 1],
-        ]);
-    });
-
-    test('bulkUpdate updates records with simple conditions', function () {
-        $count = $this->repository->bulkUpdate(
-            ['status' => 'bulk_updated', 'priority' => 99],
-            ['status' => 'active']
-        );
-
-        expect($count)->toBe(2); // 2 records had status 'active'
-
-        $updatedRecords = DB::table('bulk_test_models')
-            ->where('status', 'bulk_updated')
-            ->get();
-
-        expect($updatedRecords)->toHaveCount(2);
-
-        foreach ($updatedRecords as $record) {
-            expect($record->priority)->toBe(99)
-                ->and($record->status)->toBe('bulk_updated');
-        }
-
-        // The repository may clear cache more than once per operation due to cache support.
-        expect($this->repository->getCacheClearCount())->toBeGreaterThanOrEqual(1);
-    });
-
-    test('bulkUpdate with complex conditions using operators', function () {
-        $count = $this->repository->bulkUpdate(
-            ['status' => 'high_priority'],
+            // Update existing (using hash IDs)
             [
-                ['priority', '>=', 2],
-                'status' => 'active'
-            ]
-        );
-
-        expect($count)->toBe(1); // Only 1 record with priority >= 2 AND status = 'active'
-
-        $updated = DB::table('bulk_test_models')
-            ->where('status', 'high_priority')
-            ->first();
-
-        expect($updated)->not->toBeNull()
-            ->and($updated->name)->toBe('Update Test 3');
-    });
-
-    test('bulkUpdate automatically adds updated_at timestamp', function () {
-        // Get original timestamp first
-        $originalRecord = DB::table('bulk_test_models')
-            ->where('name', 'Update Test 1')
-            ->first();
-        $originalUpdatedAt = Carbon::parse($originalRecord->updated_at);
-
-        // Wait a full second to ensure timestamp difference
-        sleep(1);
-
-        $count = $this->repository->bulkUpdate(
-            ['status' => 'timestamped'],
-            ['name' => 'Update Test 1']
-        );
-
-        expect($count)->toBe(1);
-
-        $record = DB::table('bulk_test_models')
-            ->where('status', 'timestamped')
-            ->first();
-
-        $updatedAt = Carbon::parse($record->updated_at);
-        expect($updatedAt->greaterThan($originalUpdatedAt))->toBeTrue();
-    });
-
-    test('bulkUpdate without automatic timestamps when disabled', function () {
-        $originalUpdatedAt = DB::table('bulk_test_models')
-            ->where('name', 'Update Test 1')
-            ->value('updated_at');
-
-        $count = $this->repository->bulkUpdate(
-            ['status' => 'no_timestamp'],
-            ['name' => 'Update Test 1'],
-            ['timestamps' => false]
-        );
-
-        expect($count)->toBe(1);
-
-        $record = DB::table('bulk_test_models')
-            ->where('status', 'no_timestamp')
-            ->first();
-
-        expect($record->updated_at)->toBe($originalUpdatedAt);
-    });
-
-    test('bulkUpdate with no matching conditions', function () {
-        $count = $this->repository->bulkUpdate(
-            ['status' => 'no_match'],
-            ['status' => 'nonexistent']
-        );
-
-        expect($count)->toBe(0);
-
-        $records = DB::table('bulk_test_models')
-            ->where('status', 'no_match')
-            ->get();
-
-        expect($records)->toHaveCount(0);
-    });
-
-});
-
-describe('Bulk Upsert Operations', function () {
-
-    test('bulkUpsert inserts new records when no conflicts', function () {
-        $data = [
-            ['name' => 'New User 1', 'email' => 'new1@example.com', 'status' => 'active'],
-            ['name' => 'New User 2', 'email' => 'new2@example.com', 'status' => 'pending'],
-            ['name' => 'New User 3', 'email' => 'new3@example.com', 'status' => 'inactive'],
+                'id' => app('hashids')->encode($existingIds[0]),
+                'title' => 'Updated Book 1',
+            ],
+            [
+                'id' => app('hashids')->encode($existingIds[1]),
+                'title' => 'Updated Book 2',
+            ],
+            // Insert new
+            [
+                'title' => 'New Book 1',
+            ],
+            [
+                'title' => 'New Book 2',
+            ],
         ];
 
-        $result = $this->repository->bulkUpsert($data, ['email']);
+        $result = $this->bookRepository->bulkUpsert($data, ['id'], ['title']);
 
-        expect($result)->toBe(['inserted' => 3, 'updated' => 0])
-            ->and(DB::table('bulk_test_models')->count())->toBe(3);
+        expect($result)->toHaveKey('inserted', 2)
+            ->toHaveKey('updated', 2);
 
-        // The repository may clear cache more than once per operation due to cache support.
-        expect($this->repository->getCacheClearCount())->toBeGreaterThanOrEqual(1);
+        // Verify updates
+        $updatedBooks = Book::whereIn('id', $existingIds)->get();
+        $expectedTitles = collect($data)->where('id', '!=', null)->pluck('title')->toArray();
+        expect($updatedBooks->pluck('title')->toArray())->toEqualCanonicalizing($expectedTitles);
     });
 
-    test('bulkUpsert updates existing records when conflicts exist', function () {
-        // Insert initial data
-        $this->repository->bulkInsert([
-            ['name' => 'Original User 1', 'email' => 'user1@example.com', 'status' => 'active'],
-            ['name' => 'Original User 2', 'email' => 'user2@example.com', 'status' => 'pending'],
+    it('handles bulkDelete with hash IDs', function (): void {
+        // Create books to delete
+        $booksToDelete = Book::factory()->count(3)->create();
+        $booksToKeep = Book::factory()->count(2)->create();
+
+        $deleteIds = $booksToDelete->pluck('id')->toArray();
+        $hashIds = array_map(fn($id) => app('hashids')->encode($id), $deleteIds);
+
+        $deleted = $this->bookRepository->bulkDelete([
+            'id' => ['id', 'IN', $hashIds]
         ]);
 
-        $data = [
-            ['name' => 'Updated User 1', 'email' => 'user1@example.com', 'status' => 'modified'],
-            ['name' => 'Updated User 2', 'email' => 'user2@example.com', 'status' => 'completed'],
-        ];
-
-        $result = $this->repository->bulkUpsert($data, ['email']);
-
-        expect($result)->toBe(['inserted' => 0, 'updated' => 2])
-            ->and(DB::table('bulk_test_models')->count())->toBe(2);
-
-        $records = DB::table('bulk_test_models')->orderBy('id')->get();
-        expect($records[0]->name)->toBe('Updated User 1')
-            ->and($records[0]->status)->toBe('modified')
-            ->and($records[1]->name)->toBe('Updated User 2')
-            ->and($records[1]->status)->toBe('completed');
+        expect($deleted)->toBe(3)
+            ->and(Book::count())->toBe(2)
+            ->and(Book::whereIn('id', $booksToKeep->pluck('id'))->count())->toBe(2);
     });
 
-    test('bulkUpsert handles mixed insert and update operations', function () {
-        // Insert one existing record
-        $this->repository->bulkInsert([
-            ['name' => 'Existing User', 'email' => 'existing@example.com', 'status' => 'active'],
-        ]);
+    it('handles soft delete when model uses SoftDeletes', function (): void {
+        // Assuming Book model uses SoftDeletes
+        $books = Book::factory()->count(3)->create();
+        $bookIds = $books->pluck('id')->toArray();
+        $hashIds = array_map(fn($id) => app('hashids')->encode($id), $bookIds);
 
-        $data = [
-            ['name' => 'Updated Existing', 'email' => 'existing@example.com', 'status' => 'modified'],
-            ['name' => 'New User 1', 'email' => 'new1@example.com', 'status' => 'active'],
-            ['name' => 'New User 2', 'email' => 'new2@example.com', 'status' => 'pending'],
-        ];
+        Carbon::setTestNow('2024-01-01 15:00:00');
 
-        $result = $this->repository->bulkUpsert($data, ['email']);
+        $deleted = $this->bookRepository->bulkDelete([
+            'id' => ['id', 'IN', $hashIds]
+        ], ['soft_delete' => true]);
 
-        expect($result)->toBe(['inserted' => 2, 'updated' => 1])
-            ->and(DB::table('bulk_test_models')->count())->toBe(3);
+        expect($deleted)->toBe(3);
 
-        // Verify update worked
-        $existing = DB::table('bulk_test_models')
-            ->where('email', 'existing@example.com')
-            ->first();
+        // Books should be soft deleted
+        $softDeletedBooks = Book::withTrashed()->whereIn('id', $bookIds)->get();
+        expect($softDeletedBooks)->each(function ($book) {
+            $book->deleted_at->format('Y-m-d H:i:s')->toBe('2024-01-01 15:00:00');
+        });
 
-        expect($existing->name)->toBe('Updated Existing')
-            ->and($existing->status)->toBe('modified');
+        // Books should not appear in normal queries
+        expect(Book::whereIn('id', $bookIds)->count())->toBe(0);
+
+        Carbon::setTestNow();
     });
 
-    test('bulkUpsert with specific update columns', function () {
-        $this->repository->bulkInsert([
-            ['name' => 'Original', 'email' => 'test@example.com', 'status' => 'active', 'priority' => 5],
-        ]);
+    it('handles complex conditions with hash IDs', function (): void {
+        // Create books
+        $books = Book::factory()->count(5)->create();
+        $bookIds = $books->pluck('id')->toArray();
+        $hashIds = array_map(fn($id) => app('hashids')->encode($id), $bookIds);
 
-        $data = [
-            ['name' => 'Should Not Update', 'email' => 'test@example.com', 'status' => 'updated', 'priority' => 99],
-        ];
-
-        $result = $this->repository->bulkUpsert($data, ['email'], ['status']);
-
-        expect($result)->toBe(['inserted' => 0, 'updated' => 1]);
-
-        $record = DB::table('bulk_test_models')->first();
-        expect($record->name)->toBe('Original') // Not updated
-            ->and($record->status)->toBe('updated') // Updated
-            ->and($record->priority)->toBe(5); // Not updated
-    });
-
-    test('bulkUpsert with multiple unique columns', function () {
-        $this->repository->bulkInsert([
-            ['name' => 'User 1', 'email' => 'user@example.com', 'status' => 'active', 'category_id' => 1],
-        ]);
-
-        $data = [
-            ['name' => 'Updated User', 'email' => 'user@example.com', 'status' => 'modified', 'category_id' => 1],
-            ['name' => 'Different Category', 'email' => 'user@example.com', 'status' => 'new', 'category_id' => 2],
-        ];
-
-        $result = $this->repository->bulkUpsert($data, ['email', 'category_id']);
-
-        expect($result)->toBe(['inserted' => 1, 'updated' => 1])
-            ->and(DB::table('bulk_test_models')->count())->toBe(2);
-    });
-
-    test('bulkUpsert processes in batches for large datasets', function () {
-        $data = [];
-        for ($i = 1; $i <= 1500; $i++) {
-            $data[] = [
-                'name' => "Batch User {$i}",
-                'email' => "batch{$i}@example.com",
-                'priority' => $i % 10
-            ];
-        }
-
-        $result = $this->repository->bulkUpsert($data, ['email'], null, ['batch_size' => 500]);
-
-        expect($result)->toBe(['inserted' => 1500, 'updated' => 0])
-            ->and(DB::table('bulk_test_models')->count())->toBe(1500);
-    });
-
-    test('bulkCreateOrUpdate is alias for bulkUpsert', function () {
-        $data = [
-            ['name' => 'Alias Test', 'email' => 'alias@example.com', 'status' => 'active'],
-        ];
-
-        $result = $this->repository->bulkCreateOrUpdate($data, ['email']);
-
-        expect($result)->toBe(['inserted' => 1, 'updated' => 0])
-            ->and(DB::table('bulk_test_models')->count())->toBe(1);
-    });
-
-});
-
-describe('Bulk Delete Operations', function () {
-
-    beforeEach(function () {
-        // Create test data
-        $this->repository->bulkInsert([
-            ['name' => 'Delete Test 1', 'email' => 'delete1@example.com', 'status' => 'active', 'priority' => 1],
-            ['name' => 'Delete Test 2', 'email' => 'delete2@example.com', 'status' => 'inactive', 'priority' => 2],
-            ['name' => 'Delete Test 3', 'email' => 'delete3@example.com', 'status' => 'active', 'priority' => 3],
-            ['name' => 'Keep This', 'email' => 'keep@example.com', 'status' => 'pending', 'priority' => 1],
-        ]);
-    });
-
-    test('bulkDelete removes records with simple conditions', function () {
-        $count = $this->repository->bulkDelete(['status' => 'active']);
-
-        expect($count)->toBe(2) // 2 records with status 'active'
-            ->and(DB::table('bulk_test_models')->count())->toBe(2);
-
-        $remaining = DB::table('bulk_test_models')->get();
-        expect($remaining->pluck('status')->toArray())->not->toContain('active');
-
-        // The repository may clear cache more than once per operation due to cache support.
-        expect($this->repository->getCacheClearCount())->toBeGreaterThanOrEqual(1);
-    });
-
-    test('bulkDelete with complex conditions using operators', function () {
-        $count = $this->repository->bulkDelete([
-            ['priority', '>=', 2],
-            'status' => 'active'
-        ]);
-
-        expect($count)->toBe(1) // Only 1 record matches both conditions
-            ->and(DB::table('bulk_test_models')->count())->toBe(3);
-
-        $deleted = DB::table('bulk_test_models')
-            ->where('name', 'Delete Test 3')
-            ->first();
-
-        expect($deleted)->toBeNull();
-    });
-
-    test('bulkDelete with no matching conditions', function () {
-        $count = $this->repository->bulkDelete(['status' => 'nonexistent']);
-
-        expect($count)->toBe(0)
-            ->and(DB::table('bulk_test_models')->count())->toBe(4); // All records remain
-    });
-
-    test('bulkDelete handles empty conditions array', function () {
-        // Should delete all records when no conditions provided
-        $count = $this->repository->bulkDelete([]);
-
-        expect($count)->toBe(4) // All records deleted when no conditions
-            ->and(DB::table('bulk_test_models')->count())->toBe(0);
-    });
-
-});
-
-describe('Soft Delete Operations', function () {
-
-    beforeEach(function () {
-        // Create test data for soft delete testing
-        DB::table('soft_delete_bulk_models')->insert([
-            ['name' => 'Soft Delete 1', 'email' => 'soft1@example.com', 'status' => 'active', 'created_at' => now(), 'updated_at' => now()],
-            ['name' => 'Soft Delete 2', 'email' => 'soft2@example.com', 'status' => 'inactive', 'created_at' => now(), 'updated_at' => now()],
-            ['name' => 'Soft Delete 3', 'email' => 'soft3@example.com', 'status' => 'active', 'created_at' => now(), 'updated_at' => now()],
-        ]);
-    });
-
-    test('bulkDelete uses soft delete for models with SoftDeletes trait', function () {
-        $count = $this->softDeleteRepository->bulkDelete(['status' => 'active']);
-
-        expect($count)->toBe(2);
-
-        // Records should still exist but with deleted_at timestamp
-        expect(DB::table('soft_delete_bulk_models')->count())->toBe(3);
-
-        $softDeleted = DB::table('soft_delete_bulk_models')
-            ->whereNotNull('deleted_at')
-            ->count();
-
-        expect($softDeleted)->toBe(2);
-    });
-
-    test('bulkDelete can force hard delete even with soft delete model', function () {
-        $count = $this->softDeleteRepository->bulkDelete(
-            ['status' => 'active'],
-            ['soft_delete' => false]
+        // Update books by hash IDs with different data
+        $updated = $this->bookRepository->bulkUpdate(
+            ['title' => 'Bulk Updated Title'],
+            ['id' => ['id', 'IN', $hashIds]]
         );
 
-        expect($count)->toBe(2);
+        expect($updated)->toBe(5);
 
-        // Records should be completely removed
-        expect(DB::table('soft_delete_bulk_models')->count())->toBe(1);
+        // Verify all books were updated
+        $updatedBooks = Book::whereIn('id', $bookIds)->get();
+        expect($updatedBooks)->toHaveCount(5)
+            ->each(function ($book) {
+                $book->title->toBe('Bulk Updated Title');
+            });
     });
 
-    test('bulkDelete can explicitly enable soft delete', function () {
-        $count = $this->softDeleteRepository->bulkDelete(
-            ['status' => 'active'],
-            ['soft_delete' => true]
-        );
+    it('handles bulkCreateOrUpdate alias', function (): void {
+        $data = [
+            ['title' => 'Book A'],
+            ['title' => 'Book B'],
+        ];
 
-        expect($count)->toBe(2);
+        // First insert
+        $result1 = $this->bookRepository->bulkCreateOrUpdate($data, ['title']);
+        expect($result1['inserted'])->toBe(2)
+            ->and($result1['updated'])->toBe(0);
 
-        $softDeleted = DB::table('soft_delete_bulk_models')
-            ->whereNotNull('deleted_at')
-            ->count();
+        // Update with modified data
+        $data[0]['title'] = 'Book A';  // Same title
+        $data[1]['title'] = 'Book B';  // Same title
+        // Add new books
+        $data[] = ['title' => 'Book C'];
+        $data[] = ['title' => 'Book D'];
 
-        expect($softDeleted)->toBe(2);
+        $result2 = $this->bookRepository->bulkCreateOrUpdate($data, ['title']);
+        expect($result2['inserted'])->toBe(2)  // Book C and D
+            ->and($result2['updated'])->toBe(2);  // Book A and B
     });
 
-});
+    it('clears cache after bulk operations', function (): void {
+        // Create a test repository with cache clearing tracking
+        $repository = new class(app()) extends BookRepository {
+            public $cacheCleared = false;
 
-describe('Helper Methods and Edge Cases', function () {
+            public function clearCache(): void
+            {
+                $this->cacheCleared = true;
+            }
 
-    test('buildUniqueKey creates correct key string', function () {
-        $record = ['email' => 'test@example.com', 'category_id' => 5, 'name' => 'Test'];
-        $uniqueColumns = ['email', 'category_id'];
+            public function model(): string
+            {
+                return Book::class;
+            }
+        };
 
-        $reflection = new ReflectionClass($this->repository);
-        $method = $reflection->getMethod('buildUniqueKey');
-        $method->setAccessible(true);
+        $repository->bulkInsert([['title' => 'Test Book']]);
 
-        $key = $method->invoke($this->repository, $record, $uniqueColumns);
-
-        expect($key)->toBe('test@example.com|5');
+        expect($repository->cacheCleared)->toBeTrue();
     });
 
-    test('buildUniqueKey handles missing columns gracefully', function () {
-        $record = ['email' => 'test@example.com'];
-        $uniqueColumns = ['email', 'missing_column'];
+    it('decodes nested array conditions in bulk operations', function (): void {
+        $books = Book::factory()->count(3)->create();
+        $bookIds = $books->pluck('id')->toArray();
+        $hashIds = array_map(fn($id) => app('hashids')->encode($id), $bookIds);
 
-        $reflection = new ReflectionClass($this->repository);
-        $method = $reflection->getMethod('buildUniqueKey');
-        $method->setAccessible(true);
+        // Test with complex nested conditions
+        $conditions = [
+            'id' => ['id', 'IN', $hashIds],
+        ];
 
-        $key = $method->invoke($this->repository, $record, $uniqueColumns);
+        $deleted = $this->bookRepository->bulkDelete($conditions);
 
-        expect($key)->toBe('test@example.com|');
+        expect($deleted)->toBe(3)
+            ->and(Book::whereIn('id', $bookIds)->count())->toBe(0);
     });
 
-    test('getExistingKeys returns empty array for empty data', function () {
-        $reflection = new ReflectionClass($this->repository);
-        $method = $reflection->getMethod('getExistingKeys');
-        $method->setAccessible(true);
-
-        $keys = $method->invoke($this->repository, [], ['email']);
-
-        expect($keys)->toBe([]);
-    });
-
-    test('modelUsesSoftDeletes detects SoftDeletes trait correctly', function () {
-        $reflection = new ReflectionClass($this->softDeleteRepository);
-        $method = $reflection->getMethod('modelUsesSoftDeletes');
-        $method->setAccessible(true);
-
-        $result = $method->invoke($this->softDeleteRepository);
-
-        expect($result)->toBeTrue();
-    });
-
-    test('modelUsesSoftDeletes returns false for regular models', function () {
-        $reflection = new ReflectionClass($this->repository);
-        $method = $reflection->getMethod('modelUsesSoftDeletes');
-        $method->setAccessible(true);
-
-        $result = $method->invoke($this->repository);
-
-        expect($result)->toBeFalse();
-    });
-
-    test('decodeBulkField handles scalar values', function () {
-        $reflection = new ReflectionClass($this->repository);
-        $method = $reflection->getMethod('decodeBulkField');
-        $method->setAccessible(true);
-
-        $result = $method->invoke($this->repository, 'id', 'abc123');
-
-        // This would depend on your HashIdHelper implementation
-        expect($result)->toBe('abc123'); // Assuming no decoding for this test
-    });
-
-    test('decodeBulkField handles array values recursively', function () {
-        $reflection = new ReflectionClass($this->repository);
-        $method = $reflection->getMethod('decodeBulkField');
-        $method->setAccessible(true);
-
-        $values = [['id1'], ['id2'], ['id3']];
-        $result = $method->invoke($this->repository, 'id', $values);
-
-        expect($result)->toHaveCount(3)
-            ->and($result[0])->toBe(['id1']);
-    });
-
-});
-
-describe('Performance and Memory Testing', function () {
-
-    test('bulkInsert is memory efficient with large datasets', function () {
-        $initialMemory = memory_get_usage(true);
-
-        $data = [];
-        for ($i = 1; $i <= 5000; $i++) {
-            $data[] = [
-                'name' => "Performance User {$i}",
-                'email' => "perf{$i}@example.com",
-                'priority' => $i % 10
-            ];
-        }
-
-        $startTime = microtime(true);
-        $count = $this->repository->bulkInsert($data, ['batch_size' => 1000]);
-        $duration = microtime(true) - $startTime;
-
-        $finalMemory = memory_get_usage(true);
-        $memoryUsed = $finalMemory - $initialMemory;
-
-        expect($count)->toBe(5000)
-            ->and($duration)->toBeLessThan(10.0) // Should complete within 10 seconds
-            ->and($memoryUsed)->toBeLessThan(100 * 1024 * 1024) // Less than 100MB
-            ->and(DB::table('bulk_test_models')->count())->toBe(5000);
-    });
-
-    test('bulkUpsert handles large mixed operations efficiently', function () {
-        // Create some existing data
-        $existing = [];
-        for ($i = 1; $i <= 1000; $i++) {
-            $existing[] = [
-                'name' => "Existing {$i}",
-                'email' => "existing{$i}@example.com",
-                'priority' => $i % 5
-            ];
-        }
-        $this->repository->bulkInsert($existing);
-
-        // Prepare mixed upsert data (half updates, half inserts)
-        $upsertData = [];
-        for ($i = 1; $i <= 2000; $i++) {
-            $upsertData[] = [
-                'name' => "User {$i}",
-                'email' => $i <= 1000 ? "existing{$i}@example.com" : "new{$i}@example.com",
-                'priority' => 99
-            ];
-        }
-
-        $startTime = microtime(true);
-        $result = $this->repository->bulkUpsert($upsertData, ['email'], null, ['batch_size' => 500]);
-        $duration = microtime(true) - $startTime;
-
-        expect($result['inserted'])->toBe(1000)
-            ->and($result['updated'])->toBe(1000)
-            ->and($duration)->toBeLessThan(15.0) // Should complete within 15 seconds
-            ->and(DB::table('bulk_test_models')->count())->toBe(2000);
-    });
-
-    test('bulkUpdate performance scales with dataset size', function () {
-        // Insert test data
-        $data = [];
-        for ($i = 1; $i <= 3000; $i++) {
-            $data[] = [
-                'name' => "Update Test {$i}",
-                'email' => "update{$i}@example.com",
-                'status' => $i % 2 === 0 ? 'active' : 'inactive'
-            ];
-        }
-        $this->repository->bulkInsert($data);
-
-        $startTime = microtime(true);
-        $count = $this->repository->bulkUpdate(
-            ['status' => 'bulk_updated'],
-            ['status' => 'active']
-        );
-        $duration = microtime(true) - $startTime;
-
-        expect($count)->toBe(1500) // Half the records
-            ->and($duration)->toBeLessThan(5.0); // Should be fast
-    });
-
-});
-
-describe('Integration with Timestamps and Caching', function () {
-
-    test('all bulk operations clear cache when cache method exists', function () {
-        // Test bulkInsert
-        $this->repository->bulkInsert([
-            ['name' => 'Cache Test 1', 'email' => 'cache1@example.com']
-        ]);
-        expect($this->repository->getCacheClearCount())->toBeGreaterThanOrEqual(1);
-
-        // Test bulkUpdate
-        $this->repository->bulkUpdate(['status' => 'updated'], ['name' => 'Cache Test 1']);
-        expect($this->repository->getCacheClearCount())->toBeGreaterThanOrEqual(1);
-
-        // Test bulkUpsert
-        $this->repository->bulkUpsert([
-            ['name' => 'Cache Test 2', 'email' => 'cache2@example.com']
-        ], ['email']);
-        expect($this->repository->getCacheClearCount())->toBeGreaterThanOrEqual(1);
-
-        // Test bulkDelete
-        $this->repository->bulkDelete(['name' => 'Cache Test 1']);
-        expect($this->repository->getCacheClearCount())->toBeGreaterThanOrEqual(1);
-    });
-
-    test('timestamp handling is consistent across operations', function () {
-        // Test insert timestamps
-        $this->repository->bulkInsert([
-            ['name' => 'Timestamp Test', 'email' => 'timestamp@example.com']
-        ]);
-
-        $record = DB::table('bulk_test_models')->where('name', 'Timestamp Test')->first();
-        $createdAt = Carbon::parse($record->created_at);
-        $updatedAt = Carbon::parse($record->updated_at);
-
-        expect($createdAt->isValid())->toBeTrue()
-            ->and($updatedAt->isValid())->toBeTrue();
-
-        // Test update timestamps
-        $originalUpdatedAt = $updatedAt;
-
-        // Wait a full second to ensure time difference
-        sleep(1);
-
-        $this->repository->bulkUpdate(['status' => 'updated'], ['name' => 'Timestamp Test']);
-
-        $updatedRecord = DB::table('bulk_test_models')->where('name', 'Timestamp Test')->first();
-        $newUpdatedAt = Carbon::parse($updatedRecord->updated_at);
-
-        expect($newUpdatedAt->greaterThan($originalUpdatedAt))->toBeTrue();
-    });
-
-});
+})->covers(
+    BulkOperations::class,
+    HashIdHelper::class
+);

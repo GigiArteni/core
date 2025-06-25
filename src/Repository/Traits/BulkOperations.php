@@ -97,9 +97,25 @@ trait BulkOperations
         // Apply conditions
         foreach ($conditions as $field => $value) {
             if (is_array($value)) {
-                [$field, $operator, $val] = $value;
-                $val = $this->decodeBulkField($field, $val);
-                $query->where($field, $operator, $val);
+                // Handle [field, 'IN', $ids] and [field, 'NOT IN', $ids]
+                if (array_is_list($value) && count($value) === 3 && is_string($value[0]) && is_string($value[1]) && in_array(strtoupper($value[1]), ['IN', 'NOT IN'])) {
+                    [$f, $operator, $val] = $value;
+                    $val = $this->decodeBulkField($f, $val);
+                    if (strtoupper($operator) === 'IN') {
+                        $query->whereIn($f, (array)$val);
+                    } elseif (strtoupper($operator) === 'NOT IN') {
+                        $query->whereNotIn($f, (array)$val);
+                    }
+                } elseif (array_is_list($value) && count($value) === 3) {
+                    // Fallback: treat as operator array only if exactly 3 elements
+                    [$f, $operator, $val] = $value;
+                    $val = $this->decodeBulkField($f, $val);
+                    $query->where($f, $operator, $val);
+                } else {
+                    // Defensive: treat as simple value or throw
+                    $value = $this->decodeBulkField($field, $value);
+                    $query->where($field, $value);
+                }
             } else {
                 $value = $this->decodeBulkField($field, $value);
                 $query->where($field, $value);
@@ -176,8 +192,24 @@ trait BulkOperations
                 }
             }
 
-            // Perform inserts
+            // Ensure all records in toInsert have the same keys (remove id if missing)
             if (!empty($toInsert)) {
+                // Find all keys used in the batch
+                $allKeys = array_unique(array_reduce($toInsert, function($carry, $item) {
+                    return array_merge($carry, array_keys($item));
+                }, []));
+                // Remove id from all if any record is missing id
+                if (in_array('id', $allKeys)) {
+                    $allHaveId = array_reduce($toInsert, function($carry, $item) {
+                        return $carry && array_key_exists('id', $item);
+                    }, true);
+                    if (!$allHaveId) {
+                        foreach ($toInsert as &$item) {
+                            unset($item['id']);
+                        }
+                        unset($item);
+                    }
+                }
                 DB::table($table)->insert($toInsert);
                 $totalInserted += count($toInsert);
             }
@@ -186,6 +218,13 @@ trait BulkOperations
             foreach ($toUpdate as $record) {
                 $updateData = array_intersect_key($record, array_flip($updateColumns));
                 $whereData = array_intersect_key($record, array_flip($uniqueColumns));
+
+                // Decode unique columns for whereData
+                foreach ($uniqueColumns as $col) {
+                    if (isset($whereData[$col])) {
+                        $whereData[$col] = $this->decodeBulkField($col, $whereData[$col]);
+                    }
+                }
 
                 if ($options['timestamps']) {
                     $updateData['updated_at'] = Carbon::now();
@@ -245,9 +284,22 @@ trait BulkOperations
             // Apply conditions
             foreach ($conditions as $field => $value) {
                 if (is_array($value)) {
-                    [$field, $operator, $val] = $value;
-                    $val = $this->decodeBulkField($field, $val);
-                    $query->where($field, $operator, $val);
+                    if (array_is_list($value) && count($value) === 3 && is_string($value[0]) && is_string($value[1]) && in_array(strtoupper($value[1]), ['IN', 'NOT IN'])) {
+                        [$f, $operator, $val] = $value;
+                        $val = $this->decodeBulkField($f, $val);
+                        if (strtoupper($operator) === 'IN') {
+                            $query->whereIn($f, (array)$val);
+                        } elseif (strtoupper($operator) === 'NOT IN') {
+                            $query->whereNotIn($f, (array)$val);
+                        }
+                    } elseif (array_is_list($value) && count($value) === 3) {
+                        [$f, $operator, $val] = $value;
+                        $val = $this->decodeBulkField($f, $val);
+                        $query->where($f, $operator, $val);
+                    } else {
+                        $value = $this->decodeBulkField($field, $value);
+                        $query->where($field, $value);
+                    }
                 } else {
                     $value = $this->decodeBulkField($field, $value);
                     $query->where($field, $value);
@@ -262,9 +314,22 @@ trait BulkOperations
             // Apply conditions
             foreach ($conditions as $field => $value) {
                 if (is_array($value)) {
-                    [$field, $operator, $val] = $value;
-                    $val = $this->decodeBulkField($field, $val);
-                    $query->where($field, $operator, $val);
+                    if (array_is_list($value) && count($value) === 3 && is_string($value[0]) && is_string($value[1]) && in_array(strtoupper($value[1]), ['IN', 'NOT IN'])) {
+                        [$f, $operator, $val] = $value;
+                        $val = $this->decodeBulkField($f, $val);
+                        if (strtoupper($operator) === 'IN') {
+                            $query->whereIn($f, (array)$val);
+                        } elseif (strtoupper($operator) === 'NOT IN') {
+                            $query->whereNotIn($f, (array)$val);
+                        }
+                    } elseif (array_is_list($value) && count($value) === 3) {
+                        [$f, $operator, $val] = $value;
+                        $val = $this->decodeBulkField($f, $val);
+                        $query->where($f, $operator, $val);
+                    } else {
+                        $value = $this->decodeBulkField($field, $value);
+                        $query->where($field, $value);
+                    }
                 } else {
                     $value = $this->decodeBulkField($field, $value);
                     $query->where($field, $value);
@@ -352,7 +417,8 @@ trait BulkOperations
     {
         $keyParts = [];
         foreach ($uniqueColumns as $column) {
-            $keyParts[] = $record[$column] ?? '';
+            // Always decode the value for hashid support
+            $keyParts[] = $this->decodeBulkField($column, $record[$column] ?? '');
         }
         return implode('|', $keyParts);
     }

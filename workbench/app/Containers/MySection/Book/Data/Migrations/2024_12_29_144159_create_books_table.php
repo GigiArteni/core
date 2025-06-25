@@ -12,6 +12,7 @@ return new class extends Migration {
             $table->string('title');
             $table->foreignId('author_id')->nullable();
             $table->timestamps();
+            $table->softDeletes(); // Add deleted_at column for soft deletes
         });
     }
 

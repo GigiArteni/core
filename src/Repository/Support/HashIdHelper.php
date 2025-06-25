@@ -8,6 +8,7 @@ class HashIdHelper
 {
     /**
      * Decode HashIds for given value(s) if config is enabled.
+     * Recursively decodes arrays and falls back to raw value if decode fails.
      *
      * @param string|int|array $value
      * @return string|int|array
@@ -21,11 +22,23 @@ class HashIdHelper
         if (!preg_match('/(^id$|_id$)/', $field)) {
             return $value;
         }
-        // Use your HashId decoding logic here (replace with actual implementation)
-        $decode = fn($v) => is_numeric($v) ? $v : app('hashids')->decode($v)[0] ?? $v;
-        if (is_array($value)) {
-            return array_map($decode, $value);
-        }
+        $decode = function ($v) use (&$decode) {
+            if (is_array($v)) {
+                return array_map($decode, $v);
+            }
+            if (is_numeric($v)) {
+                return $v;
+            }
+            $decoded = app('hashids')->decode($v);
+            if (is_int($decoded)) {
+                return $decoded;
+            }
+            if (is_array($decoded) && count($decoded) === 1 && is_int($decoded[0])) {
+                return $decoded[0];
+            }
+            // Fallback: if decode fails, return original value
+            return $v;
+        };
         return $decode($value);
     }
 }

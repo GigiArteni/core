@@ -386,7 +386,7 @@ describe(class_basename(Repository::class), function (): void {
             $result = $repository->delete($book->id);
 
             expect($result)->toBeTrue();
-            $this->assertModelMissing($book);
+            $this->assertSoftDeleted($book);
         });
 
         it('throws custom exception', function (): void {

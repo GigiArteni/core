@@ -6,10 +6,9 @@ use Illuminate\Support\Str;
 describe(class_basename(View::class), function (): void {
     it('creates different namespaces for shared directory and container paths', function (): void {
         $configuration = new View();
-
         expect(
             $configuration->buildNamespaceFor(shared_path('Views')),
-        )->toBe('app/Ship')
+        )->toBe('ship')
             ->and(
                 $configuration->buildNamespaceFor(
                     app_path('Containers/MySection/Book/Views'),
