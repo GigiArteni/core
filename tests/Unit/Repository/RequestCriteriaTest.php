@@ -1050,6 +1050,10 @@ describe('Query String with HashIds Support', function (): void {
 
             $repository = new UserRepository();
             // "Active User" (Title Case) uses basic search for exact phrase matching
+            // this is failed to be fixed in the previous tests
+            // as it was not using the correct search syntax.
+            // Now we are using a simple search to find "Active User".
+            // This should return the user with the exact name "Active User".
             $request = new Request(['search' => 'Active User']);
             $criteria = new RequestCriteria($request);
 
