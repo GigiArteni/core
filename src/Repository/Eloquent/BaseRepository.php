@@ -209,7 +209,7 @@ abstract class BaseRepository implements RepositoryInterface, CacheableInterface
 
     /**
      * Find records by multiple where conditions.
-     *findById 
+     *findById
      * HashId decoding is automatic for all repository lookups (see decodeField).
      * Supports nested/composite keys and custom operators.
      */
@@ -309,7 +309,7 @@ abstract class BaseRepository implements RepositoryInterface, CacheableInterface
         $model->save();
         $this->resetModel();
         return $model;
-        
+
     }
 
     /**
@@ -524,6 +524,25 @@ abstract class BaseRepository implements RepositoryInterface, CacheableInterface
         return $this->model;
     }
 
+    /**
+     * Set the searchable fields configuration dynamically
+     * This allows tests and runtime code to override the default fieldSearchable
+     */
+    public function setFieldsSearchable(array $fields): static
+    {
+        $this->fieldSearchable = $fields;
+        return $this;
+    }
+
+    /**
+     * Get searchable fields configuration for RequestCriteria
+     * (This method already exists in your BaseRepository)
+     */
+    public function getFieldsSearchable(): array
+    {
+        return $this->fieldSearchable;
+    }
+
     // ========================================
     // CRITERIA METHODS
     // ========================================
@@ -552,8 +571,8 @@ abstract class BaseRepository implements RepositoryInterface, CacheableInterface
 
     public function getByCriteria(CriteriaInterface $criteria): array
     {
-        $this->model = $criteria->apply($this->model, $this);
-        $results = $this->model->get()->all();
+        $query = $criteria->apply($this->model->newQuery(), $this);
+        $results = $query->get()->all();
         $this->resetModel();
         return $results;
     }
@@ -570,17 +589,26 @@ abstract class BaseRepository implements RepositoryInterface, CacheableInterface
         return $this;
     }
 
+    /**
+     * Apply criteria to the current query
+     * Fixed to properly handle Builder vs Model types
+     */
     public function applyCriteria(): static
     {
         if ($this->skipCriteria) {
             return $this;
         }
+
+        $query = $this->getQuery();
         $criteria = $this->getCriteria();
+
         foreach ($criteria as $c) {
             if ($c instanceof CriteriaInterface) {
-                $this->model = $c->apply($this->model, $this);
+                $query = $c->apply($query, $this);
             }
         }
+
+        $this->query = $query;
         return $this;
     }
 
@@ -588,7 +616,9 @@ abstract class BaseRepository implements RepositoryInterface, CacheableInterface
     {
         if (is_callable($this->scopeQuery)) {
             $callback = $this->scopeQuery;
-            $this->model = $callback($this->model);
+            $query = $this->getQuery();
+            $result = $callback($query);
+            $this->query = $result;
         }
         return $this;
     }

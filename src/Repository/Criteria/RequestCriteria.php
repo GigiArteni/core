@@ -48,18 +48,26 @@ class RequestCriteria implements CriteriaInterface
             $model = $model->with($with);
         }
 
+        // Apply search conditions
         if ($search && is_array($fieldsSearchable) && count($fieldsSearchable)) {
             if (is_array($search)) {
                 // skip array search values
             } elseif (($enhancedSearch || $forceEnhanced) && $this->shouldUseEnhancedSearch($search)) {
-                $model = $this->applyEnhancedSearch($model, $search, $fieldsSearchable, $searchFields, $repository);
+                $model = $model->where(function($searchQuery) use ($search, $fieldsSearchable, $searchFields, $repository) {
+                    $this->applyEnhancedSearchToQuery($searchQuery, $search, $fieldsSearchable, $searchFields, $repository);
+                });
             } else {
-                $model = $this->applyBasicSearch($model, $search, $fieldsSearchable, $searchFields, $repository);
+                $model = $model->where(function($searchQuery) use ($search, $fieldsSearchable, $searchFields, $repository) {
+                    $this->applyBasicSearchToQuery($searchQuery, $search, $fieldsSearchable, $searchFields, $repository);
+                });
             }
         }
 
+        // Apply filter conditions (separate AND clause if search is also present)
         if ($filter && is_array($fieldsSearchable) && count($fieldsSearchable)) {
-            $model = $this->applyFilters($model, $filter, $fieldsSearchable, $repository);
+            $model = $model->where(function($filterQuery) use ($filter, $fieldsSearchable, $repository) {
+                $this->applyFiltersToQuery($filterQuery, $filter, $fieldsSearchable, $repository);
+            });
         }
 
         if ($orderBy) {
@@ -69,30 +77,235 @@ class RequestCriteria implements CriteriaInterface
         return $model;
     }
 
+    /**
+     * Enhanced search detection - smarter logic for when to use enhanced vs basic
+     */
     protected function shouldUseEnhancedSearch(string $search): bool
     {
-        return (bool)preg_match('/["+~-]|^[^:]*\s+[^:]*$/', $search);
+        // Trigger for explicit operators: +, -, ~, quotes
+        if (preg_match('/["+~-]/', $search)) {
+            return true;
+        }
+
+        // Trigger for email-like patterns (contains @ but not field-specific)
+        if (strpos($search, '@') !== false && !preg_match('/[a-zA-Z0-9_.]+:/', $search)) {
+            return true;
+        }
+
+        // Trigger for multiple words without field specifiers
+        // BUT be smarter about when to use it
+        if (preg_match('/\s+/', $search) && !preg_match('/[a-zA-Z0-9_.]+:/', $search)) {
+            // If it looks like a proper name (Title Case), don't use enhanced search
+            // e.g., "Active User", "John Smith" -> use basic search for exact matching
+            if (preg_match('/^[A-Z][a-z]+(\s+[A-Z][a-z]+)+$/', $search)) {
+                return false; // Use basic search for exact phrase matching
+            }
+
+            // For lowercase or mixed case multi-word searches, use enhanced search
+            // e.g., "john doe", "senior developer" -> use enhanced search with OR logic
+            return true;
+        }
+
+        return false;
     }
 
     /**
-     * @param Model|Builder $model
-     * @param string $search
-     * @param array<string, string> $fieldsSearchable
-     * @param array<int, string>|null $searchFields
-     * @param RepositoryInterface $repository
-     * @return Model|Builder
+     * Apply enhanced search to a query object (for combining with filters)
      */
-    protected function applyEnhancedSearch(Model|Builder $model, string $search, array $fieldsSearchable, array $searchFields = null, RepositoryInterface $repository): Model|Builder
+    protected function applyEnhancedSearchToQuery($query, string $search, array $fieldsSearchable, array $searchFields = null, RepositoryInterface $repository): void
     {
-        $searchTerms = $this->parseEnhancedSearch($search);
-        return $model->where(function($query) use ($searchTerms, $fieldsSearchable, $repository) {
-            $this->buildEnhancedQuery($query, $searchTerms, $fieldsSearchable, $repository);
-        });
+        $fields = $this->getValidSearchFields($fieldsSearchable, $searchFields);
+
+        // If no valid fields, return empty results
+        if (empty($fields)) {
+            $query->where('1', '=', '0'); // Force empty result
+            return;
+        }
+
+        // Parse field-specific terms (e.g., email:foo)
+        $fieldSpecificTerms = [];
+        $generalSearch = $search;
+
+        // Extract field-specific patterns
+        $fieldTermPattern = '/([a-zA-Z0-9_.]+):([^;\s]+)/';
+        if (preg_match_all($fieldTermPattern, $search, $matches, PREG_SET_ORDER)) {
+            foreach ($matches as $match) {
+                $field = $match[1];
+                $value = $match[2];
+                // STRICT: Only allow fields that exist in the validated fields array
+                if (array_key_exists($field, $fields)) {
+                    $fieldSpecificTerms[$field][] = $value;
+                    // Remove field-specific terms from general search
+                    $generalSearch = str_replace($match[0], '', $generalSearch);
+                }
+                // If field is not allowed, remove it from search but don't add to fieldSpecificTerms
+                else {
+                    $generalSearch = str_replace($match[0], '', $generalSearch);
+                }
+            }
+            $generalSearch = trim($generalSearch);
+        }
+
+        // If no valid field-specific terms and no general search, return empty results
+        if (empty($fieldSpecificTerms) && empty($generalSearch)) {
+            $query->where('1', '=', '0'); // Force empty result
+            return;
+        }
+
+        $hasConditions = false;
+
+        // Apply field-specific terms
+        foreach ($fieldSpecificTerms as $field => $values) {
+            foreach ($values as $value) {
+                if ($hasConditions) {
+                    $query->where(function($subQuery) use ($field, $value, $fields, $repository) {
+                        $this->applyFieldSearch($subQuery, $field, $value, $fields[$field], $repository);
+                    });
+                } else {
+                    $this->applyFieldSearch($query, $field, $value, $fields[$field], $repository);
+                    $hasConditions = true;
+                }
+            }
+        }
+
+        // Apply general enhanced search if there are remaining terms
+        if (!empty($generalSearch)) {
+            $searchTerms = $this->parseEnhancedSearch($generalSearch);
+            $availableFields = array_keys($fields);
+
+            // Remove fields already used in field-specific search
+            $generalFields = array_diff($availableFields, array_keys($fieldSpecificTerms));
+
+            if (!empty($generalFields)) {
+                if ($hasConditions) {
+                    $query->where(function($subQuery) use ($searchTerms, $generalFields, $fields, $repository) {
+                        $this->buildEnhancedQuery($subQuery, $searchTerms, $generalFields, $fields, $repository);
+                    });
+                } else {
+                    $this->buildEnhancedQuery($query, $searchTerms, $generalFields, $fields, $repository);
+                }
+            }
+        }
     }
 
     /**
-     * @param string $search
-     * @return array<string, array<int, mixed>>
+     * Apply basic search to a query object - FIXED for multi-word phrases
+     */
+    protected function applyBasicSearchToQuery($query, string $search, array $fieldsSearchable, array $searchFields = null, RepositoryInterface $repository): void
+    {
+        $searchFields = is_array($searchFields) || is_null($searchFields) ? $searchFields : explode(';', $searchFields);
+        $fields = $this->getValidSearchFields($fieldsSearchable, $searchFields);
+
+        // If no valid fields, return empty results
+        if (empty($fields)) {
+            $query->where('1', '=', '0'); // Force empty result
+            return;
+        }
+
+        // Parse all search data first
+        $allSearchData = $this->parserSearchData($search, []);
+        $searchValue = $this->parserSearchValue($search);
+
+        // Now filter search data to only include valid fields
+        $searchData = $allSearchData->only(array_keys($fields));
+
+        // Check if we have field-specific search terms that were rejected
+        $hasFieldSpecificTerms = stripos($search, ':') !== false;
+        if ($hasFieldSpecificTerms && $searchData->isEmpty() && is_null($searchValue)) {
+            // All field-specific terms were rejected and no general search term
+            $query->where('1', '=', '0'); // Force empty result
+            return;
+        }
+
+        // FIXED: Ensure we have something to search for
+        if ($searchData->isEmpty() && (is_null($searchValue) || empty($searchValue))) {
+            // No search criteria provided
+            return;
+        }
+
+        $modelForceAndWhere = strtolower($searchData->get('isForceAndWhere', 'or'));
+
+        $isFirstField = true;
+        $conditionsApplied = false;
+
+        foreach ($fields as $field => $condition) {
+            $value = null;
+            $condition = trim(strtolower($condition));
+
+            if (isset($searchData[$field])) {
+                $searchTerm = $searchData[$field];
+                if ($condition == "like" || $condition == "ilike") {
+                    $searchTerm = $this->escapeLike($searchTerm);
+                    $value = "%{$searchTerm}%";
+                } else {
+                    $value = $searchTerm;
+                }
+            } else {
+                // FIXED: Apply general search value to all searchable fields
+                if (!is_null($searchValue) && !empty($searchValue)) {
+                    if ($condition == "like" || $condition == "ilike") {
+                        $searchValueEscaped = $this->escapeLike($searchValue);
+                        $value = "%{$searchValueEscaped}%";
+                    } else {
+                        $value = $searchValue;
+                    }
+                }
+            }
+
+            if ($value !== null && $value !== '') {
+                if ($this->isIdField($field)) {
+                    $value = HashIdHelper::decodeIfNeeded($field, $value);
+                    $condition = ($condition == 'like' || $condition == 'ilike') ? '=' : $condition;
+                }
+
+                $relation = null;
+                $fieldName = $field;
+                if (stripos($field, '.')) {
+                    $explodeField = explode('.', $field);
+                    $fieldName = array_pop($explodeField);
+                    $relation = implode('.', $explodeField);
+                }
+
+                if ($isFirstField || $modelForceAndWhere == 'and') {
+                    if (!is_null($relation)) {
+                        $query->whereHas($relation, function ($relationQuery) use ($fieldName, $condition, $value) {
+                            if ($condition === 'like' || $condition === 'ilike') {
+                                $relationQuery->whereRaw("$fieldName LIKE ? ESCAPE '\\'", [$value]);
+                            } else {
+                                $relationQuery->where($fieldName, $condition, $value);
+                            }
+                        });
+                    } else {
+                        if ($condition === 'like' || $condition === 'ilike') {
+                            $query->whereRaw("$fieldName LIKE ? ESCAPE '\\'", [$value]);
+                        } else {
+                            $query->where($fieldName, $condition, $value);
+                        }
+                    }
+                    $isFirstField = false;
+                } else {
+                    if (!is_null($relation)) {
+                        $query->orWhereHas($relation, function ($relationQuery) use ($fieldName, $condition, $value) {
+                            if ($condition === 'like' || $condition === 'ilike') {
+                                $relationQuery->whereRaw("$fieldName LIKE ? ESCAPE '\\'", [$value]);
+                            } else {
+                                $relationQuery->where($fieldName, $condition, $value);
+                            }
+                        });
+                    } else {
+                        if ($condition === 'like' || $condition === 'ilike') {
+                            $query->orWhereRaw("$fieldName LIKE ? ESCAPE '\\'", [$value]);
+                        } else {
+                            $query->orWhere($fieldName, $condition, $value);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Parse enhanced search string into terms - simplified and more reliable
      */
     protected function parseEnhancedSearch(string $search): array
     {
@@ -100,123 +313,197 @@ class RequestCriteria implements CriteriaInterface
             'required' => [],
             'excluded' => [],
             'optional' => [],
-            'fuzzy' => [],
             'phrases' => []
         ];
-        preg_match_all('/"([^"]+)"/', $search, $phrases);
-        foreach ($phrases[1] as $phrase) {
-            $terms['phrases'][] = trim($phrase);
-            $search = str_replace('"' . $phrase . '"', '', $search);
-        }
-        preg_match_all('/([+\-]?)(\w+(?:~\d+)?)/', $search, $matches, PREG_SET_ORDER);
-        foreach ($matches as $match) {
-            $operator = $match[1];
-            $term = $match[2];
-            if (empty($term)) continue;
-            if (preg_match('/(\w+)~(\d+)/', $term, $fuzzyMatch)) {
-                $terms['fuzzy'][] = [
-                    'term' => $fuzzyMatch[1],
-                    'distance' => (int)$fuzzyMatch[2]
-                ];
-            } elseif ($operator === '+') {
-                $terms['required'][] = $term;
-            } elseif ($operator === '-') {
-                $terms['excluded'][] = $term;
-            } else {
-                $terms['optional'][] = $term;
+
+        // Extract quoted phrases first
+        if (preg_match_all('/"([^"]+)"/', $search, $phrases)) {
+            foreach ($phrases[1] as $phrase) {
+                $terms['phrases'][] = trim($phrase);
+                $search = str_replace('"' . $phrase . '"', '', $search);
             }
         }
+
+        // Handle email-like patterns by splitting on @ and .
+        if (strpos($search, '@') !== false && !preg_match('/[+\-]/', $search)) {
+            // Split email into meaningful parts
+            $emailParts = preg_split('/[@.]/', $search);
+            foreach ($emailParts as $part) {
+                $part = trim($part);
+                if (!empty($part)) {
+                    $terms['optional'][] = $part;
+                }
+            }
+            return $terms;
+        }
+
+        // Extract terms with operators
+        if (preg_match_all('/([+\-]?)(\S+)/', $search, $matches, PREG_SET_ORDER)) {
+            foreach ($matches as $match) {
+                $operator = $match[1];
+                $term = $match[2];
+
+                if (empty($term)) continue;
+
+                // Handle fuzzy search (term~distance)
+                if (preg_match('/(\w+)~(\d+)/', $term, $fuzzyMatch)) {
+                    // For now, treat fuzzy as optional (SQLite doesn't support SOUNDEX well)
+                    $terms['optional'][] = $fuzzyMatch[1];
+                } elseif ($operator === '+') {
+                    $terms['required'][] = $term;
+                } elseif ($operator === '-') {
+                    $terms['excluded'][] = $term;
+                } else {
+                    $terms['optional'][] = $term;
+                }
+            }
+        }
+
+        // If no explicit operators, split by spaces and treat as optional terms
+        if (empty($terms['required']) && empty($terms['excluded']) && empty($terms['optional']) && empty($terms['phrases'])) {
+            $words = preg_split('/\s+/', $search);
+            foreach ($words as $word) {
+                $word = trim($word);
+                if (!empty($word)) {
+                    $terms['optional'][] = $word;
+                }
+            }
+        }
+
         return $terms;
     }
 
     /**
-     * @param mixed $query
-     * @param array<string, array<int, mixed>> $searchTerms
-     * @param array<string, string> $fieldsSearchable
-     * @param RepositoryInterface $repository
-     * @return void
+     * Simplified enhanced query builder with proper logic
      */
-    protected function buildEnhancedQuery($query, array $searchTerms, array $fieldsSearchable, RepositoryInterface $repository): void
+    protected function buildEnhancedQuery($query, array $searchTerms, array $searchableFields, array $fieldConditions, RepositoryInterface $repository): void
     {
-        $relevanceSelects = [];
-        $relevanceScore = 0;
-        $searchableFields = $this->getSearchableFieldNames($fieldsSearchable);
+        $hasConditions = false;
+
+        // Required terms (ALL must match) - use AND logic
         foreach ($searchTerms['required'] as $term) {
-            $query->where(function($subQuery) use ($term, $searchableFields, $repository) {
-                $this->applyTermToFields($subQuery, $term, $searchableFields, 'or', $repository);
+            $query->where(function($subQuery) use ($term, $searchableFields, $fieldConditions, $repository) {
+                $this->applyTermToFields($subQuery, $term, $searchableFields, 'or', $repository, $fieldConditions);
             });
+            $hasConditions = true;
         }
+
+        // Excluded terms (must NOT match any)
         foreach ($searchTerms['excluded'] as $term) {
-            $query->whereNot(function($subQuery) use ($term, $searchableFields, $repository) {
-                $this->applyTermToFields($subQuery, $term, $searchableFields, 'or', $repository);
+            $query->whereNot(function($subQuery) use ($term, $searchableFields, $fieldConditions, $repository) {
+                $this->applyTermToFields($subQuery, $term, $searchableFields, 'or', $repository, $fieldConditions);
             });
         }
+
+        // Phrase searches (exact matches)
         foreach ($searchTerms['phrases'] as $phrase) {
-            $query->where(function($subQuery) use ($phrase, $searchableFields, $repository) {
-                $this->applyTermToFields($subQuery, $phrase, $searchableFields, 'or', $repository, '=');
+            $query->where(function($subQuery) use ($phrase, $searchableFields, $fieldConditions, $repository) {
+                $this->applyTermToFields($subQuery, $phrase, $searchableFields, 'or', $repository, $fieldConditions, true);
             });
-            foreach ($searchableFields as $field) {
-                $relevanceSelects[] = "CASE WHEN {$field} LIKE '%{$phrase}%' THEN 10 ELSE 0 END";
-            }
+            $hasConditions = true;
         }
+
+        // Optional terms - for space-separated words, use OR logic (ANY can match)
         if (!empty($searchTerms['optional'])) {
-            $query->where(function($subQuery) use ($searchTerms, $searchableFields, $repository) {
+            $query->where(function($subQuery) use ($searchTerms, $searchableFields, $fieldConditions, $repository) {
                 foreach ($searchTerms['optional'] as $term) {
-                    $subQuery->orWhere(function($termQuery) use ($term, $searchableFields, $repository) {
-                        $this->applyTermToFields($termQuery, $term, $searchableFields, 'or', $repository);
+                    $subQuery->orWhere(function($termQuery) use ($term, $searchableFields, $fieldConditions, $repository) {
+                        $this->applyTermToFields($termQuery, $term, $searchableFields, 'or', $repository, $fieldConditions);
                     });
                 }
             });
-            foreach ($searchTerms['optional'] as $term) {
-                foreach ($searchableFields as $field) {
-                    $relevanceSelects[] = "CASE WHEN {$field} LIKE '%{$term}%' THEN 5 ELSE 0 END";
-                }
-            }
+            $hasConditions = true;
         }
-        foreach ($searchTerms['fuzzy'] as $fuzzyTerm) {
-            $term = $fuzzyTerm['term'];
-            $distance = $fuzzyTerm['distance'];
-            $query->orWhere(function($subQuery) use ($term, $searchableFields, $repository) {
-                if (function_exists('soundex')) {
-                    foreach ($searchableFields as $field) {
-                        $subQuery->orWhereRaw("SOUNDEX({$field}) = SOUNDEX(?)", [$term]);
-                    }
-                } else {
-                    $this->applyTermToFields($subQuery, $term, $searchableFields, 'or', $repository);
-                }
-            });
-        }
-        if (!empty($relevanceSelects)) {
-            $relevanceFormula = '(' . implode(' + ', $relevanceSelects) . ') as relevance_score';
-            $query->selectRaw('*, ' . $relevanceFormula);
-            $query->orderByDesc('relevance_score');
+
+        // If no conditions were added, ensure we have at least one condition to avoid empty where clause
+        if (!$hasConditions) {
+            $query->where('1', '=', '1'); // Always true condition
         }
     }
 
     /**
-     * @param mixed $query
-     * @param string $term
-     * @param array<int, string> $fields
-     * @param string $operator
-     * @param RepositoryInterface|null $repository
-     * @param string $condition
-     * @return void
+     * Apply a single field search with proper condition handling
      */
-    protected function applyTermToFields($query, string $term, array $fields, string $operator = 'or', ?RepositoryInterface $repository = null, string $condition = 'like'): void
+    protected function applyFieldSearch($query, string $field, string $value, string $condition, RepositoryInterface $repository): void
     {
-        foreach ($fields as $field) {
-            $value = $condition === 'like' ? "%{$term}%" : $term;
-            $value = $this->decodeCriteriaField($field, $value);
+        $value = $this->decodeCriteriaField($field, $value);
+
+        if ($condition === 'like') {
+            $escapedValue = $this->escapeLike($value);
+            $searchValue = "%{$escapedValue}%";
+
             if (strpos($field, '.') !== false) {
-                $this->applyRelationshipSearch($query, $field, $value, $condition, $operator);
+                $this->applyRelationshipSearch($query, $field, $searchValue, 'like', 'and');
             } else {
-                if ($operator === 'or') {
-                    $query->orWhere($field, $condition === 'like' ? 'LIKE' : '=', $value);
-                } else {
-                    $query->where($field, $condition === 'like' ? 'LIKE' : '=', $value);
-                }
+                $query->whereRaw("$field LIKE ? ESCAPE '\\'", [$searchValue]);
+            }
+        } else {
+            if (strpos($field, '.') !== false) {
+                $this->applyRelationshipSearch($query, $field, $value, $condition, 'and');
+            } else {
+                $query->where($field, $condition, $value);
             }
         }
+    }
+
+    /**
+     * Apply term to multiple fields with proper escaping
+     */
+    protected function applyTermToFields($query, string $term, array $fields, string $operator = 'or', ?RepositoryInterface $repository = null, array $fieldConditions = [], bool $isPhrase = false): void
+    {
+        $isFirst = true;
+
+        foreach ($fields as $field) {
+            $condition = $fieldConditions[$field] ?? 'like';
+            $searchValue = $term;
+
+            // Apply HashId decoding for ID fields
+            $searchValue = $this->decodeCriteriaField($field, $searchValue);
+
+            if ($condition === 'like') {
+                $escapedValue = $this->escapeLike($searchValue);
+                $value = "%{$escapedValue}%";
+            } else {
+                $value = $searchValue;
+            }
+
+            if (strpos($field, '.') !== false) {
+                if ($isFirst && $operator === 'and') {
+                    $this->applyRelationshipSearch($query, $field, $value, $condition, 'and');
+                } else {
+                    $this->applyRelationshipSearch($query, $field, $value, $condition, 'or');
+                }
+            } else {
+                if ($isFirst && $operator === 'and') {
+                    if ($condition === 'like') {
+                        $query->whereRaw("$field LIKE ? ESCAPE '\\'", [$value]);
+                    } else {
+                        $query->where($field, $condition, $value);
+                    }
+                } else {
+                    if ($condition === 'like') {
+                        $query->orWhereRaw("$field LIKE ? ESCAPE '\\'", [$value]);
+                    } else {
+                        $query->orWhere($field, $condition, $value);
+                    }
+                }
+            }
+            $isFirst = false;
+        }
+    }
+
+    /**
+     * Escapes special characters for SQL LIKE queries.
+     */
+    protected function escapeLike(string $value, string $escapeChar = '\\'): string
+    {
+        return str_replace([
+            $escapeChar, '%', '_'
+        ], [
+            $escapeChar . $escapeChar,
+            $escapeChar . '%',
+            $escapeChar . '_'
+        ], $value);
     }
 
     /**
@@ -228,12 +515,7 @@ class RequestCriteria implements CriteriaInterface
     }
 
     /**
-     * @param mixed $query
-     * @param string $field
-     * @param mixed $value
-     * @param string $condition
-     * @param string $operator
-     * @return void
+     * Fixed: Apply relationship search with proper query structure
      */
     protected function applyRelationshipSearch($query, string $field, mixed $value, string $condition, string $operator): void
     {
@@ -241,93 +523,53 @@ class RequestCriteria implements CriteriaInterface
         $relation = array_shift($parts);
         $relationField = implode('.', $parts);
         $method = $operator === 'or' ? 'orWhereHas' : 'whereHas';
+
         $query->$method($relation, function($relationQuery) use ($relationField, $value, $condition) {
-            $relationQuery->where($relationField, $condition === 'like' ? 'LIKE' : '=', $value);
+            if ($condition === 'like') {
+                $relationQuery->whereRaw("$relationField LIKE ? ESCAPE '\\'", [$value]);
+            } else {
+                $relationQuery->where($relationField, $condition, $value);
+            }
         });
     }
 
     /**
-     * @param array<string, string> $fieldsSearchable
-     * @return array<int, string>
+     * Fixed: Get valid search fields and properly enforce restrictions
      */
-    protected function getSearchableFieldNames(array $fieldsSearchable): array
+    protected function getValidSearchFields(array $fieldsSearchable, ?array $searchFields = null): array
     {
-        $fields = [];
-        foreach ($fieldsSearchable as $key => $value) {
-            if (is_numeric($key)) {
-                $fields[] = $value;
-            } else {
-                $fields[] = $key;
-            }
+        // If no searchFields parameter provided, return all fieldsSearchable
+        if (is_null($searchFields) || empty($searchFields)) {
+            return $fieldsSearchable;
         }
-        return $fields;
-    }
 
-    /**
-     * @param Model|Builder $model
-     * @param string $search
-     * @param array<string, string> $fieldsSearchable
-     * @param array<int, string>|null $searchFields
-     * @param RepositoryInterface $repository
-     * @return Model|Builder
-     */
-    protected function applyBasicSearch(Model|Builder $model, string $search, array $fieldsSearchable, array $searchFields = null, RepositoryInterface $repository): Model|Builder
-    {
-        $searchFields = is_array($searchFields) || is_null($searchFields) ? $searchFields : explode(';', $searchFields);
-        $fields = $this->parserFieldsSearch($fieldsSearchable, $searchFields);
-        $isFirstField = true;
-        $searchData = $this->parserSearchData($search);
-        $searchValue = $this->parserSearchValue($search);
-        $modelForceAndWhere = strtolower($searchData->get('isForceAndWhere', 'or'));
-        $fields = array_filter($fields, 'is_string', ARRAY_FILTER_USE_KEY);
-        foreach ($fields as $field => $condition) {
-            if (!is_string($field)) continue;
-            $value = null;
-            $condition = trim(strtolower($condition));
-            if (isset($searchData[$field])) {
-                $value = ($condition == "like" || $condition == "ilike") ? "%{$searchData[$field]}%" : $searchData[$field];
-            } else {
-                if (!is_null($searchValue) && !empty($searchValue)) {
-                    $value = ($condition == "like" || $condition == "ilike") ? "%{$searchValue}%" : $searchValue;
-                }
-            }
-            if ($value) {
-                if ($this->isIdField($field)) {
-                    $value = HashIdHelper::decodeIfNeeded($field, $value);
-                    $condition = ($condition == 'like' || $condition == 'ilike') ? '=' : $condition;
-                } else {
-                    if ($condition == "like" || $condition == "ilike") {
-                        $value = "%{$value}%";
-                    }
-                }
-                $relation = null;
-                if (stripos($field, '.')) {
-                    $explodeField = explode('.', $field);
-                    $field = array_pop($explodeField);
-                    $relation = implode('.', $explodeField);
-                }
-                $modelTableName = $model->getModel()->getTable();
-                if ($isFirstField || $modelForceAndWhere == 'and') {
-                    if (!is_null($relation)) {
-                        $model->whereHas($relation, function ($query) use ($field, $condition, $value) {
-                            $query->where($field, $condition, $value);
-                        });
+        // If searchFields parameter is provided, restrict to those fields only
+        $acceptedConditions = config('repository.criteria.acceptedConditions', ['=', 'like']);
+        $restrictedFields = [];
+
+        foreach ($searchFields as $fieldSpec) {
+            if (is_string($fieldSpec)) {
+                $parts = explode(':', $fieldSpec);
+                $fieldName = $parts[0];
+
+                // Only allow fields that exist in fieldsSearchable
+                if (array_key_exists($fieldName, $fieldsSearchable)) {
+                    if (count($parts) === 2 && in_array($parts[1], $acceptedConditions)) {
+                        $restrictedFields[$fieldName] = $parts[1];
                     } else {
-                        $model->where($modelTableName.'.'.$field, $condition, $value);
-                    }
-                    $isFirstField = false;
-                } else {
-                    if (!is_null($relation)) {
-                        $model->orWhereHas($relation, function ($query) use ($field, $condition, $value) {
-                            $query->where($field, $condition, $value);
-                        });
-                    } else {
-                        $model->orWhere($modelTableName.'.'.$field, $condition, $value);
+                        $restrictedFields[$fieldName] = $fieldsSearchable[$fieldName];
                     }
                 }
             }
         }
-        return $model;
+
+        // If no valid restricted fields found, return empty array (this will cause empty results)
+        // Don't throw exception, just return empty to indicate no valid fields
+        if (empty($restrictedFields)) {
+            return [];
+        }
+
+        return $restrictedFields;
     }
 
     protected function isIdField(string $field): bool
@@ -336,49 +578,21 @@ class RequestCriteria implements CriteriaInterface
     }
 
     /**
-     * @param array<string, string> $fields
-     * @param array<int, string>|null $searchFields
-     * @return array<string, string>
-     */
-    protected function parserFieldsSearch(array $fields = [], ?array $searchFields = null): array
-    {
-        if (!is_null($searchFields) && count($searchFields)) {
-            $acceptedConditions = config('repository.criteria.acceptedConditions', [
-                '=', 'like'
-            ]);
-            $originalFields = $fields;
-            $fields = [];
-            foreach ($searchFields as $index => $field) {
-                if (is_array($field)) continue;
-                $field_parts = explode(':', $field);
-                $temporaryIndex = array_search($field_parts[0], $originalFields);
-                if (count($field_parts) == 2) {
-                    if (in_array($field_parts[1], $acceptedConditions)) {
-                        unset($originalFields[$temporaryIndex]);
-                        $fields[$field_parts[0]] = $field_parts[1];
-                    }
-                }
-            }
-            if (count($fields) == 0) {
-                throw new \Exception('None of the search fields were accepted. Accepted conditions: ' . implode(',', $acceptedConditions));
-            }
-        }
-        return $fields;
-    }
-
-    /**
      * @param string $search
      * @return \Illuminate\Support\Collection<string, mixed>
      */
-    protected function parserSearchData(string $search): \Illuminate\Support\Collection
+    protected function parserSearchData(string $search, array $fieldsSearchable = []): \Illuminate\Support\Collection
     {
         $searchData = [];
         if (stripos($search, ':')) {
             $fields = explode(';', $search);
             foreach ($fields as $row) {
                 try {
-                    [$field, $value] = explode(':', $row);
-                    $searchData[trim($field)] = trim($value);
+                    [$field, $value] = explode(':', $row, 2);
+                    $field = trim($field);
+                    // Don't filter here - let getValidSearchFields handle field validation
+                    // This allows us to parse all field:value pairs and then filter later
+                    $searchData[$field] = trim($value);
                 } catch (\Exception $e) {
                     // Skip invalid search format
                 }
@@ -393,82 +607,155 @@ class RequestCriteria implements CriteriaInterface
      */
     protected function parserSearchValue(string $search): ?string
     {
-        return stripos($search, ';') || stripos($search, ':') ? null : $search;
+        // FIXED: Only return null if search contains field-specific syntax
+        // Multi-word searches like "Active User" should return the full string
+        return (stripos($search, ';') !== false || stripos($search, ':') !== false) ? null : $search;
     }
 
     /**
-     * @param Model|Builder $model
-     * @param string|array $filter
-     * @param array<string, string> $fieldsSearchable
-     * @param RepositoryInterface $repository
-     * @return Model|Builder
+     * Apply filters to a query object (for combining with search)
      */
-    protected function applyFilters(Model|Builder $model, string|array $filter, array $fieldsSearchable, RepositoryInterface $repository): Model|Builder
+    protected function applyFiltersToQuery($query, string|array $filter, array $fieldsSearchable, RepositoryInterface $repository): void
     {
-        $fields = $this->parserFieldsSearch($fieldsSearchable, null);
-        // Support both classic (string) and array-style (array) filter syntaxes
+        $fields = $this->getValidSearchFields($fieldsSearchable, null);
+
         if (is_string($filter)) {
-            // Classic AND/OR encapsulation: email:alice@example.com;status:active|name:gigi
-            $orGroups = explode('|', $filter);
-            $isFirstGroup = true;
-            foreach ($orGroups as $group) {
-                $andParts = explode(';', $group);
-                foreach ($andParts as $part) {
-                    if (strpos($part, ':') === false) continue;
-                    [$field, $value] = explode(':', $part, 2);
-                    $field = trim($field);
-                    $value = trim($value);
-                    if (!array_key_exists($field, $fields)) continue;
-                    $condition = $fields[$field] ?? '=';
-                    if (is_numeric($condition)) {
-                        $condition = '=';
-                    }
-                    if ($isFirstGroup) {
-                        $model = $model->where($field, $condition, $value);
-                    } else {
-                        $model = $model->orWhere($field, $condition, $value);
-                    }
-                }
-                $isFirstGroup = false;
-            }
-            return $model;
+            $this->applyStringFiltersToQuery($query, $filter, $fields);
         } elseif (is_array($filter)) {
-            $filterData = collect($filter);
-        } else {
-            $filterData = collect();
+            $this->applyArrayFiltersToQuery($query, $filter, $fields);
         }
-        foreach ($filterData as $field => $value) {
-            // Support relationship fields (e.g., roles.name)
+    }
+
+    /**
+     * Handle string-based filters on a query object
+     */
+    protected function applyStringFiltersToQuery($query, string $filter, array $fields): void
+    {
+        // Split by | for OR groups
+        $orGroups = explode('|', $filter);
+
+        $isFirstGroup = true;
+
+        foreach ($orGroups as $group) {
+            $group = trim($group);
+            if (empty($group)) continue;
+
+            if ($isFirstGroup) {
+                $query->where(function($andQuery) use ($group, $fields) {
+                    $this->applyAndFilters($andQuery, $group, $fields);
+                });
+                $isFirstGroup = false;
+            } else {
+                $query->orWhere(function($andQuery) use ($group, $fields) {
+                    $this->applyAndFilters($andQuery, $group, $fields);
+                });
+            }
+        }
+    }
+
+    /**
+     * Apply AND filters within a group
+     */
+    protected function applyAndFilters($query, string $group, array $fields): void
+    {
+        $andParts = explode(';', $group);
+
+        foreach ($andParts as $part) {
+            $part = trim($part);
+            if (strpos($part, ':') === false) continue;
+
+            [$field, $value] = explode(':', $part, 2);
+            $field = trim($field);
+            $value = trim($value);
+
+            if (!array_key_exists($field, $fields)) continue;
+
+            $condition = $fields[$field] ?? '=';
+            if (is_numeric($condition)) {
+                $condition = '=';
+            }
+
+            // Decode HashId for ID fields
+            if ($this->isIdField($field)) {
+                $value = HashIdHelper::decodeIfNeeded($field, $value);
+            }
+
+            // Apply LIKE condition
+            if ($condition === 'like') {
+                $escapedValue = $this->escapeLike($value);
+                $value = "%{$escapedValue}%";
+                $query->whereRaw("$field LIKE ? ESCAPE '\\'", [$value]);
+            } else {
+                $query->where($field, $condition, $value);
+            }
+        }
+    }
+
+    /**
+     * Handle array-based filters on a query object
+     */
+    protected function applyArrayFiltersToQuery($query, array $filter, array $fields): void
+    {
+        foreach ($filter as $field => $value) {
+            if (!array_key_exists($field, $fields)) continue;
+
             $isRelationship = strpos($field, '.') !== false;
             $condition = $fields[$field] ?? '=';
             if (is_numeric($condition)) {
                 $condition = '=';
             }
+
             if (is_array($value)) {
+                // Decode HashIds for ID fields in array values
+                if ($this->isIdField($field)) {
+                    $value = array_map(function($v) use ($field) {
+                        return HashIdHelper::decodeIfNeeded($field, $v);
+                    }, $value);
+                }
+
                 if ($isRelationship) {
                     $parts = explode('.', $field);
                     $relation = array_shift($parts);
                     $relationField = implode('.', $parts);
-                    $model = $model->whereHas($relation, function ($query) use ($relationField, $value) {
-                        $query->whereIn($relationField, $value);
+                    $query->whereHas($relation, function ($relationQuery) use ($relationField, $value) {
+                        $relationQuery->whereIn($relationField, $value);
                     });
                 } else {
-                    $model = $model->whereIn($field, $value);
+                    $query->whereIn($field, $value);
                 }
                 continue;
             }
+
+            // Decode HashId for ID fields
+            if ($this->isIdField($field)) {
+                $value = HashIdHelper::decodeIfNeeded($field, $value);
+            }
+
+            // Use LIKE for fields with 'like' condition
+            if ($condition === 'like') {
+                $escapedValue = $this->escapeLike($value);
+                $value = "%{$escapedValue}%";
+            }
+
             if ($isRelationship) {
                 $parts = explode('.', $field);
                 $relation = array_shift($parts);
                 $relationField = implode('.', $parts);
-                $model = $model->whereHas($relation, function ($query) use ($relationField, $condition, $value) {
-                    $query->where($relationField, $condition, $value);
+                $query->whereHas($relation, function ($relationQuery) use ($relationField, $condition, $value) {
+                    if ($condition === 'like') {
+                        $relationQuery->whereRaw("$relationField LIKE ? ESCAPE '\\'", [$value]);
+                    } else {
+                        $relationQuery->where($relationField, $condition, $value);
+                    }
                 });
             } else {
-                $model = $model->where($field, $condition, $value);
+                if ($condition === 'like') {
+                    $query->whereRaw("$field LIKE ? ESCAPE '\\'", [$value]);
+                } else {
+                    $query->where($field, $condition, $value);
+                }
             }
         }
-        return $model;
     }
 
     /**

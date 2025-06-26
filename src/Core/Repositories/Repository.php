@@ -97,6 +97,11 @@ abstract class Repository extends BaseRepository
     public function visible(array|null $fields = null): static { return $this; }
     public function scopeQuery(\Closure $scope): static { return $this; }
     public function getFieldsSearchable(): array { return $this->fieldSearchable ?? []; }
+    public function setFieldsSearchable(array $fields): static
+    {
+        $this->fieldSearchable = $fields;
+        return $this;
+    }
     public function getModel(): Model { return parent::getModel(); }
     public function getPresenter() { return null; }
     public function setPresenter($presenter): static { return $this; }

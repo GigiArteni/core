@@ -8,7 +8,9 @@ use Workbench\App\Containers\Identity\User\Models\User;
 class UserRepository extends ParentRepository
 {
     protected array $fieldSearchable = [
-        'name' => 'ilike',
+        'name' => 'like',
+        'email' => 'like',
+        'id' => '=',
     ];
 
     public function model(): string
